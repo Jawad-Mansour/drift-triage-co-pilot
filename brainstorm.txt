@@ -1,0 +1,3186 @@
+# DRIFT TRIAGE CO-PILOT - COMPLETE MASTER DOCUMENT
+
+## Based on All Decisions Made in This Chat
+### ML Flow Part (Platform) - COMPLETE | Agent Part - COMPLETE
+
+---
+
+# TABLE OF CONTENTS
+
+1. [What is Drift Triage Co-Pilot?](#1-what-is-drift-triage-co-pilot)
+2. [The Big Picture - Complete Architecture](#2-the-big-picture---complete-architecture)
+3. [The Dataset - UCI Bank Marketing](#3-the-dataset---uci-bank-marketing)
+4. [Platform Requirements - COMPLETE DECISIONS](#4-platform-requirements---complete-decisions)
+5. [Agent Requirements - COMPLETE DECISION LOG](#5-agent-requirements---complete-decision-log)
+6. [The 5 "Think About" Problems - Our Solutions](#6-the-5-think-about-problems---our-solutions)
+7. [Checkpoints & Persistence Decisions](#7-checkpoints--persistence-decisions)
+8. [Human-in-the-Loop (HIL) Decisions](#8-human-in-the-loop-hil-decisions)
+9. [Queue & Tasks Decisions](#9-queue--tasks-decisions)
+10. [Promotion Gate Decisions](#10-promotion-gate-decisions)
+11. [Dashboard Decisions](#11-dashboard-decisions)
+12. [CI & Testing Decisions](#12-ci--testing-decisions)
+13. [LLM Choice Decisions](#13-llm-choice-decisions)
+14. [Docker & Deployment Decisions](#14-docker--deployment-decisions)
+15. [Documentation Decisions](#15-documentation-decisions)
+16. [Complete Decision Summary Table](#16-complete-decision-summary-table)
+17. [Submission Requirements](#17-submission-requirements)
+18. [Key Terminology Reference](#18-key-terminology-reference)
+19. [Final Checklist Before Submission](#19-final-checklist-before-submission)
+20. [Coding Guidelines - Agent Branch](#20-coding-guidelines---agent-branch)
+21. [Complete Explanation - How Everything Works Together](#21-complete-explanation---how-everything-works-together)
+22. [Implementation Readiness — Remaining Gaps Resolved](#22-implementation-readiness--remaining-gaps-resolved)
+
+---
+
+# 1. WHAT IS DRIFT TRIAGE CO-PILOT?
+
+## Simple Definition
+
+Imagine you have a **robot that makes decisions** (like approving loans or predicting if someone will buy a product). 
+
+Over time, the world changes. People change. The economy changes. So your robot gets **worse at its job** because it learned from old data.
+
+**"Drift"** = when the robot's inputs start looking different from what it trained on.
+
+**"Triage"** = like in a hospital emergency room - deciding which patient to treat first, and how.
+
+**"Co-Pilot"** = an AI assistant that helps manage this problem automatically.
+
+## What It Does (The Mission Statement)
+
+Train a binary classifier on the UCI Bank Marketing dataset. Register it. Serve it. Watch it. Build a **LangGraph supervisor** that consumes the drift signal, decides what to do, dispatches slow consequences (replay the test set, retrain, rollback) through a Redis-backed queue, persists its state across restarts, and pauses for human approval before any change to Production reaches the registry.
+
+## The Two Required Tracks
+
+| Track | Focus | Key Components |
+|-------|-------|----------------|
+| **MLOps** | Artifacts, validation, observability | PSI, chi², end-to-end serving, promotion gates |
+| **Agentic Systems** | Multi-agent topologies, memory, persistence | LangGraph, checkpoints, long-running tools |
+
+**Both are required. Neither is optional.**
+
+## Critical Requirements
+
+- This is **not** a Colab notebook. It is a real repository that comes up with `docker-compose up` from a clean clone.
+- The platform and the agent each survive the other crashing.
+- The agent's decision logic is regression-tested in CI.
+- The queue is idempotent.
+- None of these are stretch goals.
+
+---
+
+# 2. THE BIG PICTURE - COMPLETE ARCHITECTURE
+
+## High-Level Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│                              COMPLETE SYSTEM ARCHITECTURE                           │
+│                                                                                     │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                    MODEL PLATFORM (FastAPI + MLflow)                          │  │
+│  │                              ⚠️ PENDING DECISIONS ⚠️                          │  │
+│  │                                                                               │  │
+│  │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐   │  │
+│  │  │  Training   │───▶│   MLflow    │───▶│  FastAPI    │───▶│   Drift     │   │  │
+│  │  │  Pipeline   │    │  Registry   │    │  Server     │    │  Calculator │   │  │
+│  │  │   ⚠️ PENDING │    │   ⚠️ PENDING │    │   ⚠️ PENDING │    │   ⚠️ PENDING │   │  │
+│  │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘   │  │
+│  │         │                  │                  │                  │          │  │
+│  │         ▼                  ▼                  ▼                  ▼          │  │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐    │  │
+│  │  │                    Postgres (Persistent Storage)                    │    │  │
+│  │  │  - Registry state    - Predictions log    - Reference statistics   │    │  │
+│  │  └─────────────────────────────────────────────────────────────────────┘    │  │
+│  │                                                                               │  │
+│  │                              │                                                │  │
+│  │                              │ Webhook (drift alert)                          │  │
+│  │                              ▼                                                │  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                             │
+│                                      ▼                                             │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                      LANGGRAPH SUPERVISOR (The Agent)                         │  │
+│  │                              ✅ ALL DECISIONS COMPLETE ✅                      │  │
+│  │                                                                               │  │
+│  │                          ┌─────────────────┐                                  │  │
+│  │                          │   SUPERVISOR    │                                  │  │
+│  │                          │    (BOSS)       │                                  │  │
+│  │                          └────────┬────────┘                                  │  │
+│  │                                   │                                           │  │
+│  │              ┌────────────────────┼────────────────────┐                      │  │
+│  │              │                    │                    │                      │  │
+│  │              ▼                    ▼                    ▼                      │  │
+│  │     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐               │  │
+│  │     │   TRIAGE     │     │   ACTION     │     │   COMMS      │               │  │
+│  │     │   AGENT      │     │   AGENT      │     │   AGENT      │               │  │
+│  │     │              │     │              │     │              │               │  │
+│  │     │ "How bad     │     │ "What        │     │ "Tell the    │               │  │
+│  │     │  is this     │     │  should we   │     │  dashboard   │               │  │
+│  │     │  drift?"     │     │  do?"        │     │  what's      │               │  │
+│  │     │              │     │              │     │  happening"  │               │  │
+│  │     │ DECISION TREE│     │ RULES + LLM  │     │ PURE LLM     │               │  │
+│  │     │ (NO LLM)     │     │ (EDGE CASES) │     │ (REQUIRED)   │               │  │
+│  │     └──────────────┘     └──────────────┘     └──────────────┘               │  │
+│  │                                                                               │  │
+│  │              ┌─────────────────────────────────────────────────┐             │  │
+│  │              │         Postgres (LangGraph Checkpoints)        │             │  │
+│  │              │  - Agent brain state    - Investigation history │             │  │
+│  │              └─────────────────────────────────────────────────┘             │  │
+│  │                                                                               │  │
+│  │                              │                                                │  │
+│  │                              │ HTTP (promotion after HIL)                     │  │
+│  │                              ▼                                                │  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                             │
+│                                      │ Dispatch tasks                              │
+│                                      ▼                                             │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                           REDIS QUEUE + DLQ                                   │  │
+│  │                              ✅ ALL DECISIONS COMPLETE ✅                      │  │
+│  │                                                                               │  │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐    │  │
+│  │  │                        MAIN QUEUE (FIFO)                             │    │  │
+│  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │    │  │
+│  │  │  │Retrain   │  │Replay    │  │Rollback  │  │Retrain   │            │    │  │
+│  │  │  │Task #1   │─▶│Task #2   │─▶│Task #3   │─▶│Task #4   │            │    │  │
+│  │  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │    │  │
+│  │  └─────────────────────────────────────────────────────────────────────┘    │  │
+│  │                                      │                                        │  │
+│  │                                      │ After 5 failed retries                │  │
+│  │                                      ▼                                        │  │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐    │  │
+│  │  │                      DEAD LETTER QUEUE (DLQ)                         │    │  │
+│  │  │  ┌──────────────────────┐  ┌──────────────────────┐                 │    │  │
+│  │  │  │ Failed Retrain Task  │  │ Failed Replay Task   │                 │    │  │
+│  │  │  │ (needs human fix)    │  │ (needs human fix)    │                 │    │  │
+│  │  │  └──────────────────────┘  └──────────────────────┘                 │    │  │
+│  │  └─────────────────────────────────────────────────────────────────────┘    │  │
+│  │                                                                               │  │
+│  │  Features:                                                                    │  │
+│  │  - Idempotency keys (no duplicate tasks)                                     │  │
+│  │  - Exponential backoff retries (1s, 2s, 4s, 8s, 16s)                        │  │
+│  │  - Persistent across restarts                                                │  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                             │
+│                                      │                                            │
+│                                      ▼                                            │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │                         STREAMLIT DASHBOARD                                   │  │
+│  │                              ✅ ALL DECISIONS COMPLETE ✅                      │  │
+│  │                                                                               │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │  │
+│  │  │   Registry   │  │   Agent      │  │    Queue     │  │    HIL       │     │  │
+│  │  │    State     │  │   Investigations│  │    Depth     │  │   Inbox      │     │  │
+│  │  │              │  │              │  │              │  │              │     │  │
+│  │  │ v1: AUC 0.82 │  │ #001: HIGH   │  │ Pending: 3   │  │ ⚠️ Approve   │     │  │
+│  │  │ v2: AUC 0.79 │  │ #002: MEDIUM │  │ DLQ: 1       │  │   retrain?   │     │  │
+│  │  │ Prod: v1     │  │ #003: LOW    │  │              │  │ [YES] [NO]   │     │  │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘     │  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Mermaid Architecture Diagram (For ARCH.md)
+
+```mermaid
+flowchart TB
+    subgraph Platform["MODEL PLATFORM (FastAPI + MLflow)"]
+        Training[Training Pipeline<br/>LightGBM + Preprocessor<br/>✅ COMPLETE]
+        MLflow[MLflow Registry<br/>Postgres backend + Artifact Volume<br/>✅ COMPLETE]
+        FastAPI[FastAPI Server<br/>/predict + /promote<br/>✅ COMPLETE]
+        Drift[Drift Calculator<br/>PSI + Chi² + Output Dist<br/>✅ COMPLETE]
+    end
+    
+    subgraph Storage["PERSISTENT STORAGE"]
+        Postgres1[(Postgres<br/>Registry State + Predictions Log)]
+    end
+    
+    subgraph Agent["LANGGRAPH SUPERVISOR (The Agent) - ✅ COMPLETE ✅"]
+        Supervisor[Supervisor/BOSS<br/>Orchestration + Checkpoints]
+        Triage[Triage Agent<br/>"How bad is this drift?"<br/>Decision Tree - NO LLM]
+        Action[Action Agent<br/>"What should we do?"<br/>Rules + LLM Edge Cases]
+        Comms[Comms Agent<br/>"Tell the dashboard"<br/>Pure LLM - REQUIRED]
+        Postgres2[(Postgres<br/>LangGraph Checkpoints)]
+    end
+    
+    subgraph Queue["REDIS QUEUE + DLQ - ✅ COMPLETE ✅"]
+        MainQueue[Main Queue - FIFO<br/>Retrain | Replay | Rollback]
+        DLQ[Dead Letter Queue<br/>Failed after 5 retries]
+        Worker[Worker<br/>Consumes tasks]
+    end
+    
+    subgraph Dashboard["STREAMLIT DASHBOARD - ✅ COMPLETE ✅"]
+        RegistryView[Registry State]
+        Investigations[Agent Investigations]
+        QueueView[Queue Depth + DLQ]
+        HILInbox[HIL Inbox with Approve/Reject]
+    end
+    
+    Training --> MLflow
+    MLflow --> FastAPI
+    FastAPI --> Drift
+    FastAPI --> Postgres1
+    Drift --> Postgres1
+    
+    Drift -- Webhook --> Supervisor
+    
+    Supervisor --> Triage
+    Supervisor --> Action
+    Supervisor --> Comms
+    Supervisor --> Postgres2
+    
+    Action -- Dispatch Task --> MainQueue
+    MainQueue --> Worker
+    Worker -- 5 failures --> DLQ
+    
+    Supervisor --> Dashboard
+    MainQueue --> Dashboard
+    DLQ --> Dashboard
+    
+    HILInbox -- Approval --> Supervisor
+    
+    Supervisor -- HTTP /promote --> FastAPI
+```
+
+## Agent Internal Architecture Diagram (Detailed)
+
+```mermaid
+flowchart LR
+    subgraph Agent["LANGGRAPH SUPERVISOR - ✅ COMPLETE ✅"]
+        
+        Webhook[Webhook Receiver<br/>POST /webhook]
+        
+        subgraph Supervisor["Supervisor (BOSS)"]
+            Orchestrator[Orchestrator]
+            CheckpointManager[Checkpoint Manager<br/>Saves to Postgres]
+            HILManager[HIL Manager<br/>Pauses for approval]
+            QueueDispatcher[Queue Dispatcher<br/>Sends to Redis]
+        end
+        
+        subgraph Triage["TRIAGE AGENT - NO LLM"]
+            TriageRules[Decision Tree<br/>PSI > 0.25 → CRITICAL<br/>PSI > 0.2 → HIGH<br/>PSI > 0.1 → MEDIUM<br/>Economic Feature → +1 Level]
+            TriageOutput[Output: severity + reason]
+        end
+        
+        subgraph Action["ACTION AGENT - RULES + LLM"]
+            ActionRules[Rules Engine - 90%<br/>CRITICAL → ROLLBACK<br/>HIGH+Economic → RETRAIN_URGENT<br/>HIGH → RETRAIN_SCHEDULED<br/>MEDIUM → REPLAY_TEST<br/>LOW → MONITOR]
+            ActionLLM[LLM Verification - 10%<br/>Recent Retrain?<br/>Multiple Drifts?<br/>Borderline Scores?]
+            ActionOutput[Output: action + confidence]
+        end
+        
+        subgraph Comms["COMMS AGENT - PURE LLM"]
+            CommsLLM[LLM Generator<br/>Human-facing text<br/>Investigation summaries<br/>Approval requests]
+            CommsOutput[Output: natural language]
+        end
+        
+        Webhook --> Orchestrator
+        Orchestrator --> CheckpointManager
+        Orchestrator --> Triage
+        Triage --> TriageOutput
+        TriageOutput --> Orchestrator
+        Orchestrator --> Action
+        Action --> ActionLLM
+        ActionRules --> ActionOutput
+        ActionLLM --> ActionOutput
+        ActionOutput --> Orchestrator
+        Orchestrator --> HILManager
+        HILManager --> Orchestrator
+        Orchestrator --> QueueDispatcher
+        Orchestrator --> Comms
+        Comms --> CommsOutput
+        
+    end
+```
+
+## Component Flow Diagram (Story Mode)
+
+```
+Timeline: How everything works together
+
+9:00 AM ─────────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 1: Everything is happy. Model predicts well.                                   │
+│                                                                                     │
+│ Customer ──► FastAPI ──► Model ──► Prediction ("NO")                                │
+│                                              │                                      │
+│                                              ▼                                      │
+│                                   Saved to Postgres                                 │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         │ 30 minutes later...
+         ▼
+9:30 AM ─────────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 2: Economy changes. euribor3m (interest rate) jumps.                          │
+│                                                                                     │
+│ New data comes in: euribor3m values are much higher than training data             │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:31 AM ─────────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 3: FastAPI drift calculator wakes up.                                         │
+│                                                                                     │
+│ Compares last 1000 predictions vs training data:                                   │
+│ - PSI for euribor3m = 0.35 (threshold is 0.2 → DRIFT!)                             │
+│ - Severity = HIGH                                                                   │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:31:05 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 4: Platform sends webhook to LangGraph Supervisor.                            │
+│                                                                                     │
+│ POST http://agent:8002/webhook                                                      │
+│ {                                                                                   │
+│   "alert_id": "drift_001",                                                          │
+│   "feature": "euribor3m",                                                           │
+│   "psi": 0.35,                                                                      │
+│   "severity": "HIGH"                                                                │
+│ }                                                                                   │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:31:10 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 5: Supervisor creates investigation and saves checkpoint.                     │
+│                                                                                     │
+│ Checkpoint saved to Postgres:                                                       │
+│ {                                                                                   │
+│   "investigation_id": "#001",                                                       │
+│   "status": "STARTED",                                                              │
+│   "drift_data": {...}                                                               │
+│ }                                                                                   │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:31:15 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 6: Supervisor calls TRIAGE agent.                                             │
+│                                                                                     │
+│ Triage agent (DECISION TREE - NO LLM):                                              │
+│ if psi > 0.25: return "CRITICAL"                                                    │
+│ if psi > 0.2: return "HIGH"                                                         │
+│ if psi > 0.1: return "MEDIUM"                                                       │
+│ if feature in ECONOMIC_FEATURES: bump severity +1                                   │
+│                                                                                     │
+│ Returns: {"severity": "CRITICAL", "reason": "Economic feature with PSI>0.2"}       │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:31:20 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 7: Supervisor calls ACTION agent.                                             │
+│                                                                                     │
+│ Action agent (RULES + LLM for edge cases):                                         │
+│ - Rules handle 90% of cases                                                        │
+│ - LLM handles edge cases (recent retrain, multiple drifts, borderline scores)      │
+│                                                                                     │
+│ Returns: {"action": "RETRAIN_URGENT", "confidence": 0.95}                          │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:31:25 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 8: Supervisor saves checkpoint and pauses for HIL.                            │
+│                                                                                     │
+│ Checkpoint updated:                                                                 │
+│ {                                                                                   │
+│   "investigation_id": "#001",                                                       │
+│   "status": "WAITING_FOR_HIL",                                                      │
+│   "proposed_action": "RETRAIN_URGENT"                                               │
+│ }                                                                                   │
+│                                                                                     │
+│ Sends approval request to dashboard                                                 │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:31:30 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 9: Dashboard shows HIL approval request.                                      │
+│                                                                                     │
+│ ┌─────────────────────────────────────────────────────────────────────────────┐   │
+│ │ ⚠️ PENDING APPROVAL - Investigation #001                                    │   │
+│ │                                                                              │   │
+│ │ Agent request: RETRAIN MODEL                                                 │   │
+│ │ Reason: euribor3m PSI=0.35 (CRITICAL drift on economic feature)            │   │
+│ │ Proposed: Train new model v3 with recent data                               │   │
+│ │                                                                              │   │
+│ │ [✅ APPROVE]  [❌ REJECT]  [🔍 SEE DETAILS]                                 │   │
+│ └─────────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         │ Human is busy... waits 30 seconds
+         ▼
+9:32:00 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 10: Human clicks APPROVE.                                                      │
+│                                                                                     │
+│ Dashboard sends POST to agent: /approve/{investigation_id}                          │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:32:05 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 11: Supervisor validates approval (not stale) and dispatches to Redis queue.  │
+│                                                                                     │
+│ Checks:                                                                             │
+│ - Approval created 35 seconds ago → still valid (10 minute limit)                  │
+│ - No new drift on euribor3m since approval                                         │
+│                                                                                     │
+│ Queue task added:                                                                   │
+│ {                                                                                   │
+│   "idempotency_key": "retrain_euribor3m_2026-05-04_09",                            │
+│   "type": "retrain",                                                                │
+│   "investigation_id": "#001",                                                       │
+│   "created_at": "2026-05-04T09:32:05Z"                                              │
+│ }                                                                                   │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:32:10 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 12: Queue worker picks up task.                                               │
+│                                                                                     │
+│ Worker: "I see a retrain task! Starting retraining with recent data..."            │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         │ If retrain FAILS (database down):
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 12a: Exponential backoff retries.                                             │
+│                                                                                     │
+│ Attempt 1: Fail → wait 1 second                                                    │
+│ Attempt 2: Fail → wait 2 seconds                                                   │
+│ Attempt 3: Fail → wait 4 seconds                                                   │
+│ Attempt 4: Fail → wait 8 seconds                                                   │
+│ Attempt 5: Fail → wait 16 seconds                                                  │
+│ Attempt 6: All retries exhausted → Move to DLQ                                     │
+│                                                                                     │
+│ Alert human: "Retrain task failed 5 times, needs manual intervention"              │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         │ If retrain SUCCEEDS:
+         ▼
+9:45:00 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 13: New model v3 saved to MLflow.                                             │
+│                                                                                     │
+│ MLflow now has:                                                                     │
+│ - v1: AUC 0.82 (old production)                                                    │
+│ - v2: AUC 0.79 (experimental)                                                      │
+│ - v3: AUC 0.85 (new, trained on recent data including drift)                       │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:50:00 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 14: Promotion gate checks (Day-4 checklist).                                  │
+│                                                                                     │
+│ ✅ Model passed all integration tests                                               │
+│ ✅ AUC > 0.80 (0.85)                                                                │
+│ ✅ Recall >= 0.75 (0.81)                                                            │
+│ ✅ No data leakage (duration dropped, pdays handled)                               │
+│ ✅ Drift acceptable on reference data                                               │
+│ ✅ Model card complete with hash + environment fingerprint                         │
+│                                                                                     │
+│ → Promotion allowed!                                                                │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+9:51:00 AM ──────────────────────────────────────────────────────────────────────────►
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│ STEP 15: v3 promoted to production.                                                │
+│                                                                                     │
+│ Future predictions use v3. Investigation #001 marked COMPLETE.                     │
+│ Dashboard updated: "Production model: v3 (AUC 0.85)"                                │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Decision Flow Diagram (Action Agent Logic)
+
+```mermaid
+flowchart TD
+    Start([Drift Detected]) --> GetSeverity[Get Severity from Triage]
+    
+    GetSeverity --> CheckMissing{Model URI<br/>Missing?}
+    CheckMissing -->|YES| ActionFallback[SWITCH_TO_FALLBACK]
+    CheckMissing -->|NO| CheckAUC{Model AUC<br/>< 0.65?}
+    
+    CheckAUC -->|YES| ActionRollback[ROLLBACK]
+    CheckAUC -->|NO| CheckCritical{Severity ==<br/>CRITICAL?}
+    
+    CheckCritical -->|YES| ActionRollback
+    
+    CheckCritical -->|NO| CheckEconomic{Feature is<br/>euribor3m or<br/>cons.price.idx?}
+    
+    CheckEconomic -->|YES| CheckHighSeverity{Severity == HIGH?}
+    CheckHighSeverity -->|YES| ActionUrgent[RETRAIN_URGENT]
+    CheckHighSeverity -->|NO| CheckMedSeverity{Severity == MEDIUM?}
+    CheckMedSeverity -->|YES| ActionScheduled[RETRAIN_SCHEDULED<br/>/escalated]
+    
+    CheckEconomic -->|NO| CheckRecentRetrain{Retrained<br/>< 30 min ago?}
+    
+    CheckRecentRetrain -->|YES| ActionReplay[REPLAY_TEST_SET<br/>then re-evaluate]
+    CheckRecentRetrain -->|NO| CheckHighSeverity2{Severity == HIGH?}
+    
+    CheckHighSeverity2 -->|YES| ActionScheduled2[RETRAIN_SCHEDULED]
+    CheckHighSeverity2 -->|NO| CheckMediumSeverity{Severity == MEDIUM?}
+    
+    CheckMediumSeverity -->|YES| ActionReplay2[REPLAY_TEST_SET]
+    CheckMediumSeverity -->|NO| ActionMonitor[MONITOR]
+    
+    ActionFallback --> HIL[Needs HIL?<br/>YES → Wait for approval<br/>NO → Execute]
+    ActionRollback --> HIL
+    ActionUrgent --> HIL
+    ActionScheduled --> HIL
+    ActionScheduled2 --> HIL
+    ActionReplay --> NoHIL[Execute Immediately<br/>Dispatch to Queue]
+    ActionReplay2 --> NoHIL
+    ActionMonitor --> NoHIL2[Execute Immediately<br/>No Queue]
+    
+    HIL --> Wait[Wait for Human Approval]
+    Wait --> Approved{Human Approved?}
+    Approved -->|YES| Dispatch[Dispatch to Queue]
+    Approved -->|NO| Close[Close Investigation]
+    
+    Dispatch --> Worker[Worker Processes]
+    Worker --> Complete[Investigation Complete]
+    
+    NoHIL --> Worker
+    NoHIL2 --> Complete
+    Close --> Complete
+```
+
+## Checkpoint Save Strategy Diagram
+
+```mermaid
+flowchart LR
+    subgraph Milestones["CHECKPOINT MILESTONES (7 points)"]
+        M1[1. Investigation Started]
+        M2[2. Triaged]
+        M3[3. Action Decided]
+        M4[4. HIL Request Sent]
+        M5[5. HIL Response Received]
+        M6[6. Task Dispatched]
+        M7[7. Investigation Complete]
+    end
+    
+    subgraph Risky["BEFORE RISKY OPERATIONS"]
+        R1[Before LLM Call]
+        R2[Before External API]
+        R3[Before DB Write]
+    end
+    
+    M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7
+    
+    R1 -.-> M3
+    R2 -.-> M6
+    R3 -.-> M2
+```
+
+## Idempotency Key Generation Diagram
+
+```mermaid
+flowchart LR
+    subgraph Input["Input Components"]
+        A[Action Type<br/>RETRAIN]
+        B[Feature<br/>euribor3m]
+        C[Date Hour<br/>2026-05-05-14]
+        D[Severity<br/>HIGH]
+    end
+    
+    subgraph Combine["Combine"]
+        E["retrain_euribor3m_2026-05-05-14_HIGH"]
+    end
+    
+    subgraph Hash["Hash (MD5)"]
+        F["a3f5c2e1b8d9..."]
+    end
+    
+    A --> Combine
+    B --> Combine
+    C --> Combine
+    D --> Combine
+    Combine --> Hash
+    Hash --> Key[Idempotency Key]
+```
+
+## Retry Strategy Diagram (Exponential Backoff)
+
+```mermaid
+flowchart TD
+    Task[Task Received] --> Attempt1[Attempt 1]
+    Attempt1 -->|Success| Done[✓ Complete]
+    Attempt1 -->|Fail| Wait1[Wait 1 second]
+    Wait1 --> Attempt2[Attempt 2]
+    Attempt2 -->|Success| Done
+    Attempt2 -->|Fail| Wait2[Wait 2 seconds]
+    Wait2 --> Attempt3[Attempt 3]
+    Attempt3 -->|Success| Done
+    Attempt3 -->|Fail| Wait3[Wait 4 seconds]
+    Wait3 --> Attempt4[Attempt 4]
+    Attempt4 -->|Success| Done
+    Attempt4 -->|Fail| Wait4[Wait 8 seconds]
+    Wait4 --> Attempt5[Attempt 5]
+    Attempt5 -->|Success| Done
+    Attempt5 -->|Fail| Wait5[Wait 16 seconds]
+    Wait5 --> DLQ[Move to Dead Letter Queue]
+    DLQ --> Alert[Alert Human<br/>Manual Intervention Needed]
+```
+
+## HIL Approval Flow Diagram
+
+```mermaid
+flowchart TD
+    Agent[Agent Decides Action] --> CheckAction{Action Changes<br/>Production?}
+    
+    CheckAction -->|NO| Execute[Execute Immediately]
+    CheckAction -->|YES| CreateHIL[Create HIL Request]
+    
+    CreateHIL --> Dashboard[Dashboard Shows Approval Button]
+    Dashboard --> Human{Human Clicks}
+    
+    Human -->|APPROVE| Validate{Validate Approval}
+    Human -->|REJECT| Close[Close Investigation]
+    
+    Validate --> CheckTime{Approved<br/>within 10 min?}
+    CheckTime -->|NO| Expired[Mark EXPIRED<br/>Request New Approval]
+    CheckTime -->|YES| CheckNewDrift{New Drift<br/>Since Approval?}
+    
+    CheckNewDrift -->|YES| Warning[Add Warning<br/>Show to Human]
+    CheckNewDrift -->|NO| Dispatch[Dispatch to Queue]
+    
+    Warning --> HumanReview{Human Reviews}
+    HumanReview -->|Still Approve| Dispatch
+    HumanReview -->|Cancel| Close
+    
+    Expired --> CreateHIL
+    Execute --> Done[✓ Complete]
+    Dispatch --> Done
+    Close --> Done
+```
+
+## LLM Fallback Chain Diagram
+
+```mermaid
+flowchart TD
+    Request[LLM Request] --> TryOpenAI[Try OpenAI GPT-4o-mini]
+    
+    TryOpenAI -->|Success| Return1[Return Response]
+    TryOpenAI -->|Failure| Wait1[Wait 1 second]
+    Wait1 --> TryOpenAI2[Retry OpenAI]
+    TryOpenAI2 -->|Success| Return1
+    TryOpenAI2 -->|Failure| Wait2[Wait 2 seconds]
+    Wait2 --> TryOpenAI3[Retry OpenAI]
+    TryOpenAI3 -->|Success| Return1
+    TryOpenAI3 -->|Failure| TryGroq[Try Groq Llama 3]
+    
+    TryGroq -->|Success| Return2[Return Response]
+    TryGroq -->|Failure| Template[Return Template Text<br/>"[LLM UNAVAILABLE]..."]
+    
+    Return1 --> End([End])
+    Return2 --> End
+    Template --> End
+```
+
+## Dashboard Refresh & Data Flow Diagram
+
+```mermaid
+flowchart LR
+    subgraph Services["Backend Services"]
+        Agent[Agent API]
+        Platform[Platform API]
+        Redis[Redis Queue]
+        Postgres[(Postgres)]
+    end
+    
+    subgraph Dashboard["Streamlit Dashboard"]
+        Poll[Polling Loop<br/>Every 2 seconds]
+        WS[WebSocket<br/>Primary - Real-time]
+        UI[UI Components]
+    end
+    
+    subgraph Data["Data Shown"]
+        Registry[Registry State]
+        Investigations[Agent Investigations]
+        Queue[Queue Depth + DLQ]
+        HIL[HIL Inbox]
+    end
+    
+    WS -.->|Primary| Agent
+    Poll -.->|Fallback| Agent
+    
+    Agent --> Postgres
+    Platform --> Postgres
+    Redis --> Queue
+    
+    Agent --> Investigations
+    Platform --> Registry
+    Agent --> HIL
+    
+    Investigations --> UI
+    Registry --> UI
+    Queue --> UI
+    HIL --> UI
+```
+
+## Docker Services Architecture Diagram
+
+```mermaid
+flowchart TB
+    subgraph Docker["DOCKER COMPOSE"]
+        
+        subgraph Network["Internal Network (bridge)"]
+            direction LR
+            
+            Postgres[Postgres<br/>:5432<br/>Volume: postgres_data]
+            Redis[Redis<br/>:6379<br/>Volume: redis_data]
+            Platform[FastAPI Platform<br/>:8001<br/>Stateless]
+            Agent[LangGraph Agent<br/>:8002<br/>Stateless]
+            Dashboard[Streamlit Dashboard<br/>:8501<br/>Stateless]
+            Worker[Queue Worker<br/>Stateless]
+            MLflow[MLflow<br/>:5000<br/>Volume: mlflow_artifacts]
+        end
+        
+        subgraph Volumes["Persistent Volumes"]
+            V1[(postgres_data)]
+            V2[(redis_data)]
+            V3[(mlflow_artifacts)]
+        end
+        
+        Postgres -.-> V1
+        Redis -.-> V2
+        MLflow -.-> V3
+        
+        Platform --> Postgres
+        Platform --> MLflow
+        Agent --> Postgres
+        Agent --> Redis
+        Dashboard --> Agent
+        Dashboard --> Platform
+        Dashboard --> Redis
+        Worker --> Redis
+        Worker --> Postgres
+        Agent --> Platform
+    end
+    
+    subgraph External["External"]
+        User[User Browser]
+        API[External API Calls]
+    end
+    
+    User --> Dashboard
+    API --> Platform
+```
+
+---
+
+# 3. THE DATASET - UCI BANK MARKETING
+
+## Overview
+
+| Property | Value |
+|----------|-------|
+| **Name** | UCI Bank Marketing |
+| **Description** | Phone-call campaign records from a Portuguese retail bank |
+| **Rows** | ~41,188 rows |
+| **Features** | 20 features |
+| **Target** | Did the client subscribe to a term deposit? |
+| **Positive rate** | ~11% |
+| **File to use** | `bank-additional-full.csv` |
+
+## Split Strategy Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│                         DATA SPLIT STRATEGY                                         │
+│                                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐   │
+│  │                         Total: 41,188 rows                                   │   │
+│  │                                                                              │   │
+│  │  ┌─────────────────────────────────────────────────────────────────────┐    │   │
+│  │  │                                                                       │    │   │
+│  │  │   ████████████████████████████████████████████████████████████████    │    │   │
+│  │  │   ████████████████████████████████████████████████████████████████    │    │   │
+│  │  │   ████████████████████████████████████████████████████████████████    │    │   │
+│  │  │   ████████████████████████████████████████████████████████████████    │    │   │
+│  │  │                                                                       │    │   │
+│  │  │   60% Training                    20% Validation    20% Test          │    │   │
+│  │  │   24,713 rows                     8,238 rows        8,237 rows        │    │   │
+│  │  │                                                                       │    │   │
+│  │  └─────────────────────────────────────────────────────────────────────┘    │   │
+│  │                                                                              │   │
+│  │  Stratified by target, random_state=42                                       │   │
+│  │                                                                              │   │
+│  └─────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## What is a Term Deposit?
+
+A **term deposit** = A savings account where you lock money for a fixed time (6 months, 1 year, etc.) for higher interest.
+
+**The bank's problem:**
+- Calling people costs money
+- If you call someone who will NEVER buy → wasted money
+- If you call someone who WILL buy → profit!
+
+**Your model's job:** Predict YES (1) or NO (0) for each customer.
+
+## KNOWN TRAPS - CRITICAL!
+
+| Trap | Problem | Solution |
+|------|---------|----------|
+| **duration** | This feature is recorded AFTER the call ends. It leaks the target (long calls = more likely to buy). In production, you don't know duration before calling! | **DROP this column entirely** |
+| **pdays == 999** | 999 means "client was never contacted before" (sentinel value) | Bin it OR create a flag column: `was_contacted_before = (pdays != 999)` |
+| **'unknown' values** | Categories marked 'unknown' are NOT missing data | Treat as a real category. It tells you: "the bank doesn't know this info about the customer" (which is informative!) |
+
+## Features to Know
+
+**Numerical features (PSI monitors these):**
+- `age` (21 to 90 years old)
+- `euribor3m` (interest rate: 0.5% to 5%)
+- `cons.price.idx` (consumer price index)
+- `campaign` (number of calls made to this client)
+- `previous` (number of previous contacts)
+- `emp.var.rate` (employment variation rate)
+
+**Categorical features (Chi² monitors these):**
+- `job` (admin, technician, services, retired, student, etc.)
+- `marital` (married, single, divorced)
+- `education` (basic, high school, university)
+- `contact` (telephone, cellular)
+- `month` (jan, feb, ..., dec)
+- `day_of_week` (mon, tue, ...)
+
+## Drift Narrative for Friday Demo
+
+**The story you will demonstrate:**
+
+> "The macroeconomic features (euribor3m, cons.price.idx) are real economic indicators. During the demo, we will shift one numeric feature (euribor3m) and one categorical feature (job) live, and watch both the platform and the agent react."
+
+**What to do in demo:**
+1. Start system, show everything is healthy (no drift)
+2. Send a request that artificially increases euribor3m values
+3. Platform detects PSI > 0.2 → drift alert
+4. Agent opens investigation
+5. Dashboard shows HIL approval
+6. Human approves
+7. Queue dispatches retrain
+8. Dashboard updates to show outcome
+
+## PSI (Population Stability Index) Explanation Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│                    HOW PSI WORKS (Numerical Features)                               │
+│                                                                                     │
+│  BEFORE (Training Data)                    AFTER (New Data)                         │
+│                                                                                     │
+│  Height Distribution                       Height Distribution                      │
+│  of Students                               of Students                              │
+│                                                                                     │
+│        ┌─────┐                                   ┌─────┐                            │
+│        │     │                                   │     │                            │
+│     ┌──┘     └──┐                             ┌──┘     └──┐                         │
+│     │           │                             │           │                         │
+│  ┌──┘           └──┐                       ┌──┘           └──┐                      │
+│  │                 │                       │                 │                      │
+│  └─────────────────┘                       └─────────────────┘                      │
+│    140-150-160cm                             150-160-170cm                          │
+│                                                                                     │
+│  Mean: 152cm                                  Mean: 162cm                           │
+│                                                                                     │
+│  PSI = 0.35 (>0.2) → HIGH DRIFT DETECTED!                                          │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Chi² Explanation Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│                    HOW CHI² WORKS (Categorical Features)                            │
+│                                                                                     │
+│  BEFORE (Training Data)                    AFTER (New Data)                         │
+│                                                                                     │
+│  Favorite Ice Cream                        Favorite Ice Cream                       │
+│                                                                                     │
+│  Vanilla: 50% ────┐                        Vanilla: 20% ────┐                       │
+│  Chocolate: 30% ──┼─►                      Chocolate: 60% ──┼─►                     │
+│  Strawberry: 20% ─┘                        Strawberry: 20% ─┘                       │
+│                                                                                     │
+│  ┌────────────────────────────────────┐    ┌────────────────────────────────────┐  │
+│  │ ████████████████████████████ 50%   │    │ ████████ 20%                       │  │
+│  │ ████████████████ 30%              │    │ ██████████████████████████████ 60%  │  │
+│  │ ████████ 20%                      │    │ ████████ 20%                       │  │
+│  └────────────────────────────────────┘    └────────────────────────────────────┘  │
+│                                                                                     │
+│  Chi² p-value = 0.001 (<0.05) → SIGNIFICANT DRIFT DETECTED!                        │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# 4. PLATFORM REQUIREMENTS - COMPLETE DECISIONS
+
+## ✅ ALL PLATFORM DECISIONS ARE NOW COMPLETE ✅
+
+---
+
+## Decision #1: Which ML Model? (COMPLETE)
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **LightGBM (`LGBMClassifier` via sklearn wrapper)** |
+| **Why** | Handles class imbalance natively via `class_weight="balanced"`. Supports categorical features without full one-hot encoding. Fast training — critical for the retrain queue worker. Sklearn-compatible (fits inside a `Pipeline`). Strong tabular performance on imbalanced datasets (~11% positive class). |
+
+**Pipeline structure:**
+```python
+Pipeline([
+    ("preprocessor", ColumnTransformer([
+        ("num", StandardScaler(), NUMERIC_FEATURES),
+        ("cat", OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=-1
+        ), CATEGORICAL_FEATURES),
+    ])),
+    ("classifier", LGBMClassifier(
+        n_estimators=500,
+        class_weight="balanced",
+        random_state=42,
+        n_jobs=-1
+    ))
+])
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #2: How to handle pdays==999? (COMPLETE)
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **Boolean flag + drop raw pdays column** |
+| **Why** | 999 is a sentinel meaning "never contacted before" — not a real numeric value. The range of real pdays values is 1–27, so including 999 as a number would severely distort PSI calculations and mislead the model. A binary flag `contacted_before = (pdays != 999)` preserves the informative signal cleanly without numeric distortion. |
+
+**Implementation:**
+```python
+df['contacted_before'] = (df['pdays'] != 999).astype(int)
+df = df.drop(columns=['pdays'])
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #3: Window size for drift detection? (COMPLETE)
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **500 predictions (sliding window)** |
+| **Why** | PSI requires at minimum ~100 samples for statistical reliability. 1000 would take too long to fill during a demo. 500 is the industry default — reactive enough, statistically valid, and configurable via `DRIFT_WINDOW_SIZE` env var. |
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #4: How often does drift calculator run? (COMPLETE)
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **After every 50 new predictions (sliding window recalculates)** |
+| **Why** | Per-prediction recalculation is too expensive. Time-based batching is unpredictable during demos. Every 50 predictions gives reactivity without overhead and is easily triggerable during the live demo by sending a batch of shifted inputs. Configurable via `DRIFT_RECALC_INTERVAL=50` env var. |
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #5: Where to store predictions log for drift? (COMPLETE)
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **Postgres table (`predictions_log`)** |
+| **Why** | Project requires persistence across container restarts. Postgres is already in the stack. Redis requires AOF configuration for durability and is not suited for relational queries over rolling windows. Files do not persist across restarts without a volume and are hard to query efficiently. |
+
+**Table schema:**
+```sql
+CREATE TABLE predictions_log (
+    id              SERIAL PRIMARY KEY,
+    prediction_id   UUID DEFAULT gen_random_uuid(),
+    timestamp       TIMESTAMPTZ DEFAULT NOW(),
+    input_features  JSONB NOT NULL,
+    predicted_class INT NOT NULL,
+    predicted_proba FLOAT NOT NULL,
+    model_version   VARCHAR(50) NOT NULL
+);
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #6: PSI threshold for severity change? (COMPLETE)
+
+| PSI Range | Severity |
+|-----------|----------|
+| PSI < 0.1 | LOW |
+| 0.1 ≤ PSI < 0.2 | MEDIUM |
+| 0.2 ≤ PSI < 0.25 | HIGH |
+| PSI ≥ 0.25 | CRITICAL |
+| **Plus:** Feature is `euribor3m` or `cons.price.idx` AND PSI > 0.15 | Escalate +1 level |
+
+**Why:** Industry standard PSI thresholds from actuarial literature. The economic feature escalation is baked into the agent's triage logic (Decision #14). Both thresholds are configurable via `DRIFT_PSI_THRESHOLD_HIGH=0.2` and `DRIFT_PSI_THRESHOLD_CRITICAL=0.25` env vars.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #7: Chi² p-value threshold for drift? (COMPLETE)
+
+| p-value Range | Severity |
+|---------------|----------|
+| p-value > 0.05 | LOW (no significant drift) |
+| 0.01 < p-value ≤ 0.05 | MEDIUM |
+| p-value ≤ 0.01 | HIGH |
+
+**Why:** Standard statistical significance thresholds. Chi² is applied per categorical feature using `scipy.stats.chi2_contingency`, comparing the rolling window distribution against the training reference distribution stored in Postgres.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #8: How to persist registry state across restarts? (COMPLETE)
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **MLflow as its own Docker service (7th service) with Postgres backend + named artifact volume** |
+| **Why** | MLflow defaults to SQLite — not suitable for Docker (file locking issues, no concurrent access). Postgres as MLflow's backend store gives proper persistence. MLflow runs as its own service on port 5000 with a `mlflow_artifacts` named volume. MLflow IS the source of truth for registry state — no secondary cache is needed. |
+
+**docker-compose snippet:**
+```yaml
+mlflow:
+  image: ghcr.io/mlflow/mlflow:latest
+  ports:
+    - "5000:5000"
+  environment:
+    - MLFLOW_BACKEND_STORE_URI=postgresql+psycopg2://user:pass@postgres:5432/mlflow
+    - MLFLOW_ARTIFACT_ROOT=/mlflow/artifacts
+  volumes:
+    - mlflow_artifacts:/mlflow/artifacts
+  depends_on:
+    - postgres
+  command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql+psycopg2://user:pass@postgres:5432/mlflow --default-artifact-root /mlflow/artifacts
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #55: Output-Distribution Drift (COMPLETE — NEW)
+
+**The brief explicitly requires:** "output-distribution drift" in addition to PSI and chi².
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **PSI on binned predicted probabilities (10 equal-width bins, 0.0 to 1.0)** |
+| **Why** | The model's output distribution (the `predict_proba` score for class 1) must be stable over time. PSI on 10 bins of the probability score directly measures this. Same threshold scale as numeric PSI. This is the fastest signal that the model is behaving differently even before feature drift surfaces — a canary in the coal mine. |
+
+**Implementation:**
+```python
+def compute_output_drift(reference_probs: list[float], current_probs: list[float], bins: int = 10) -> float:
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    ref_hist, _ = np.histogram(reference_probs, bins=edges)
+    cur_hist, _ = np.histogram(current_probs, bins=edges)
+    return compute_psi(ref_hist, cur_hist)
+```
+
+**Severity thresholds:** Same PSI scale as Decision #6. No economic feature escalation applied to output drift.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #56: Retrain Worker — Exact Responsibilities (COMPLETE — NEW)
+
+The retrain worker picks up a `RETRAIN` or `RETRAIN_URGENT` task from the Redis queue and executes these steps in order:
+
+1. **Load data:** Pull training reference data + last 7 days of `predictions_log` rows from Postgres (recent inference distribution context)
+2. **Retrain pipeline:** Run the full sklearn `Pipeline` (preprocessor + LightGBM) with `random_state=42`
+3. **Tune threshold:** On the validation split, find the highest threshold where `recall >= 0.75`
+4. **Run promotion gate checks:** AUC > 0.80, Recall >= 0.75 at tuned threshold, `duration` absent from features, `pdays` handled as flag, drift acceptable on reference data, model card complete
+5. **If gate passes:** Register new version in MLflow with artifact triple (model binary, input schema, model card with hash + env fingerprint). Set alias to `Staging` only — NEVER Production
+6. **Write result to Postgres:** Update task row with `status=COMPLETED`, `new_model_version=N`
+7. **If gate fails:** Update task with `status=FAILED`, reason logged. Move to DLQ. Alert dashboard
+8. **Agent resumes on poll:** Reads task status. Creates a NEW HIL request for Production promotion of the Staging version
+9. **Human approves HIL → Agent calls `/promote`** → model promoted to Production
+
+**Critical rule:** The worker NEVER promotes to Production directly. It only creates a Staging version. Production promotion is always agent + HIL.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #57: Agent → Platform Promotion Contract (COMPLETE — NEW)
+
+The platform→agent webhook contract is defined in Decision #11. This is the **reverse direction**.
+
+**`POST /promote`** (platform endpoint, called by agent after HIL approval)
+
+**Request schema (agent → platform):**
+```json
+{
+  "schema_version": "1.0",
+  "model_version": "3",
+  "investigation_id": "inv_001",
+  "hil_approval_id": "hil_001",
+  "approved_by": "alice@bank.com",
+  "approved_at": "2026-05-06T14:35:22Z",
+  "action": "PROMOTE_TO_PRODUCTION"
+}
+```
+*Authentication: shared secret via `X-Agent-Key` header (stored in `.env`)*
+
+**Response (platform → agent):**
+```json
+{
+  "schema_version": "1.0",
+  "status": "promoted",
+  "model_version": "3",
+  "promoted_at": "2026-05-06T14:35:30Z",
+  "registry_state": {
+    "production": "3",
+    "previous_production": "1"
+  }
+}
+```
+
+**Error responses:**
+| Status | Meaning |
+|--------|---------|
+| `400` | Promotion gate checklist fails |
+| `401` | Invalid `X-Agent-Key` header |
+| `409` | Model version already in Production |
+| `500` | MLflow unreachable |
+
+**Breaking change rule:** Any field removal or type change is a breaking change. Increment `schema_version`. Both sides must support the current version before deployment.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Platform Architecture Status Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│                    PLATFORM ARCHITECTURE - STATUS: COMPLETE                         │
+│                                                                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                              │   │
+│  │  ┌─────────────────┐                                                         │   │
+│  │  │  Data Loading   │  ✅ LightGBM pipeline, drop duration,                  │   │
+│  │  │  & Preprocessing│     contacted_before flag, unknown as category          │   │
+│  │  └────────┬────────┘                                                         │   │
+│  │           │                                                                   │   │
+│  │           ▼                                                                   │   │
+│  │  ┌─────────────────┐                                                         │   │
+│  │  │  Model Training │  ✅ LightGBM, class_weight=balanced,                   │   │
+│  │  │  LightGBM       │     random_state=42, 60/20/20 split                    │   │
+│  │  └────────┬────────┘                                                         │   │
+│  │           │                                                                   │   │
+│  │           ▼                                                                   │   │
+│  │  ┌─────────────────┐                                                         │   │
+│  │  │ Threshold Tuning│  ✅ Highest threshold where recall >= 0.75              │   │
+│  │  │ recall >= 0.75  │     on validation split                                 │   │
+│  │  └────────┬────────┘                                                         │   │
+│  │           │                                                                   │   │
+│  │           ▼                                                                   │   │
+│  │  ┌─────────────────┐                                                         │   │
+│  │  │  MLflow Registry│  ✅ Own Docker service (:5000), Postgres backend,       │   │
+│  │  │  (own service)  │     mlflow_artifacts volume, artifact triple            │   │
+│  │  └────────┬────────┘                                                         │   │
+│  │           │                                                                   │   │
+│  │           ▼                                                                   │   │
+│  │  ┌─────────────────┐                                                         │   │
+│  │  │  FastAPI Server │  ✅ /predict (Pydantic), /promote (agent contract),     │   │
+│  │  │  (/predict)     │     /drift/report, /webhook endpoint                    │   │
+│  │  └────────┬────────┘                                                         │   │
+│  │           │                                                                   │   │
+│  │           ▼                                                                   │   │
+│  │  ┌─────────────────┐                                                         │   │
+│  │  │ Drift Calculator│  ✅ PSI (numerics) + Chi² (categoricals) +              │   │
+│  │  │ PSI+Chi²+Output │     Output-distribution drift (Decision #55)            │   │
+│  │  └────────┬────────┘                                                         │   │
+│  │           │                                                                   │   │
+│  │           ▼                                                                   │   │
+│  │  ┌─────────────────┐                                                         │   │
+│  │  │  Promotion Gate │  ✅ AUC>0.80, Recall>=0.75, no leakage,                │   │
+│  │  │  (Day-4 checks) │     model card complete, agent+HIL required             │   │
+│  │  └─────────────────┘                                                         │   │
+│  │                                                                              │   │
+│  └─────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                     │
+│  All platform decisions complete. Both platform and agent are ready to implement.   │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# 5. AGENT REQUIREMENTS - COMPLETE DECISION LOG
+
+## Decision #9: Webhook or Polling? (COMPLETE)
+
+**Question:** How does agent know when drift happens?
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **WEBHOOKS** |
+| **Why** | Webhooks provide sub-second reaction time for economic feature drift. While more complex than polling, the real-time detection is critical for features like euribor3m that directly correlate with campaign success rates. |
+
+**Defense for DECISIONS.md:**
+> *"Webhooks provide sub-second reaction time for economic feature drift. While more complex than polling, the real-time detection is critical for features like euribor3m that directly correlate with campaign success rates. Platform implements retry logic with exponential backoff to handle transient agent unavailability."*
+
+**Implementation note:** Platform side retry on failure:
+```python
+def send_webhook(agent_url, payload):
+    for attempt in range(3):
+        try:
+            response = requests.post(agent_url, json=payload, timeout=5)
+            if response.status_code == 200:
+                return True
+        except:
+            wait = 2 ** attempt  # 1, 2, 4 seconds
+            time.sleep(wait)
+    return False  # Log to DLQ after 3 failures
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #10: If polling, what interval? (COMPLETE)
+
+| Question | Answer |
+|----------|--------|
+| **Decision** | N/A - we chose webhooks |
+| **Status** | ✅ COMPLETE |
+
+---
+
+## Decision #11: What does the webhook payload look like? (COMPLETE)
+
+**Question:** Define the JSON schema for drift alerts.
+
+**Our Decision:**
+```json
+{
+  "schema_version": "1.0",
+  "alert_id": "drift_20260504_093100_001",
+  "timestamp": "2026-05-04T09:31:00.123Z",
+  "source": "platform-drift-detector",
+  
+  "drift_data": {
+    "feature_name": "euribor3m",
+    "feature_type": "numerical",
+    "metric": "psi",
+    "score": 0.352,
+    "threshold": 0.2,
+    "previous_score": 0.05,
+    "severity": "HIGH",
+    "previous_severity": "LOW"
+  },
+  
+  "context": {
+    "window_size": 500,
+    "reference_period": "2026-05-01_to_2026-05-03",
+    "current_period": "2026-05-04_09:00_to_2026-05-04_09:30"
+  },
+  
+  "links": {
+    "investigation_url": "http://dashboard:8501/investigations/001",
+    "drift_report_url": "http://platform:8001/drift/reports/001"
+  }
+}
+```
+
+**Why JSON:** Universal, human-readable, typed. 99% of APIs use JSON. Add `schema_version` for evolution.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #12: What HTTP status codes? (COMPLETE)
+
+**Question:** Standard HTTP responses for webhook endpoint.
+
+| Scenario | Status Code | Meaning |
+|----------|-------------|---------|
+| **Success** | 200 OK | Agent received and queued |
+| **Success (async)** | 202 Accepted | Agent busy, will handle |
+| **Bad request** | 400 Bad Request | Malformed JSON |
+| **Unauthorized** | 401 Unauthorized | Invalid API key |
+| **Not found** | 404 Not Found | Wrong endpoint |
+| **Rate limited** | 429 Too Many Requests | Throttling |
+| **Server error** | 500 Internal Error | Agent crashed |
+| **Service unavailable** | 503 Service Unavailable | Agent starting up |
+
+**Why:** Standard HTTP status codes from REST practices. Platform can react appropriately.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #13: Triage Agent Approach (COMPLETE)
+
+**Question:** How does the triage agent determine severity?
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **DECISION TREE (NO LLM)** |
+| **Why** | PSI and chi² are NUMBERS. You compare them to thresholds. A decision tree is deterministic, testable, and fast. An LLM would add cost and latency with ZERO benefit. |
+
+**Implementation:**
+```python
+def triage(psi, feature):
+    if psi > 0.25: return "CRITICAL"
+    if psi > 0.2: return "HIGH"
+    if psi > 0.1: return "MEDIUM"
+    if feature in ECONOMIC_FEATURES and psi > 0.15: return "HIGH"  # escalation
+    return "LOW"
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #14: Exact rules for severity (COMPLETE)
+
+| Condition | Severity |
+|-----------|----------|
+| PSI > 0.25 | CRITICAL |
+| PSI > 0.2 | HIGH |
+| PSI > 0.1 | MEDIUM |
+| PSI ≤ 0.1 | LOW |
+| **Plus:** Feature is euribor3m or cons.price.idx and PSI > 0.15 | HIGH (escalation) |
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #15: Action Agent Approach (COMPLETE)
+
+**Question:** How does the action agent decide what to do?
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **RULES + LLM VERIFICATION (Edge Cases)** |
+| **Why** | 90% of cases are simple (HIGH → RETRAIN, LOW → MONITOR). BUT some cases need judgment (recent retrain, multiple drifts). LLM provides that judgment WITHOUT rewriting your rules. |
+
+**Standard cases (90%):** Rule-based decision matrix
+**Edge cases (10%):** LLM verifies logical consistency
+
+**Edge cases that trigger LLM:**
+- Recent retrain (<30 minutes ago)
+- Multiple features drifting (≥3)
+- Significant model performance drop (AUC ↓ >0.1)
+- Borderline PSI (0.15-0.25)
+- Conflicting drift signals (PSI low, chi² high)
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #16: What actions can agent take? (COMPLETE)
+
+| Action | What it does | Needs HIL? | Async? |
+|--------|--------------|------------|--------|
+| **MONITOR** | Do nothing, keep watching | ❌ NO | No |
+| **REPLAY_TEST_SET** | Run existing tests on current model | ❌ NO | Yes |
+| **RETRAIN_SCHEDULED** | Train new model on recent data | ✅ YES | Yes |
+| **RETRAIN_URGENT** | Priority retrain, skip queue | ✅ YES | Yes |
+| **ROLLBACK** | Switch to previous model version | ✅ YES | Yes |
+| **SWITCH_TO_FALLBACK** | Use emergency rules-based model | ✅ YES | No |
+| **ALERT_HUMAN** | Send notification, no action | ❌ NO | No |
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #17: What triggers each action? (Decision Logic) (COMPLETE)
+
+**Question:** Given severity and context, which action do you take?
+
+**Our Decision:** Priority-based rule system (ordered by importance)
+
+**Rules (evaluated in order):**
+
+1. **Missing Model Rule:** If investigation's model URI not found in MLflow → `SWITCH_TO_FALLBACK`
+
+2. **Poor Performance Rule:** If current model AUC < 0.65 → `ROLLBACK` (or `SWITCH_TO_FALLBACK` if no previous)
+
+3. **Critical Severity Rule:** If severity == "CRITICAL" → `ROLLBACK`
+
+4. **Economic Feature Rule:** If feature in ["euribor3m", "cons.price.idx"]:
+   - severity == "HIGH" → `RETRAIN_URGENT`
+   - severity == "MEDIUM" → `RETRAIN_SCHEDULED` (escalate)
+
+5. **Recent Retrain Rule:** If minutes_since_last_retrain < 30 and severity in ["HIGH", "MEDIUM"]:
+   - First, `REPLAY_TEST_SET` to verify if retrain needed
+   - Then re-evaluate
+
+6. **Standard Severity Rules:**
+   - severity == "HIGH" → `RETRAIN_SCHEDULED`
+   - severity == "MEDIUM" → `REPLAY_TEST_SET`
+   - severity == "LOW" → `MONITOR`
+
+7. **Fallback:** If no rules match → `ALERT_HUMAN` + `MONITOR`
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #18: Comms agent - LLM usage (COMPLETE)
+
+**Question:** When does the comms agent use LLM?
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **PURE LLM (REQUIRED)** |
+| **Why** | Humans don't read PSI numbers. They read sentences. LLM turns "PSI=0.35, severity=HIGH, action=RETRAIN" into "The interest rate (euribor3m) has changed significantly. The model needs retraining to adapt to the new economic environment." This is REQUIRED by the project brief. |
+
+**Responsibilities:**
+- Generate dashboard notifications
+- Write investigation summaries for humans
+- Explain WHY an action was chosen
+- Create HIL approval request messages
+- Summarize investigation outcomes
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #19: Where are prompts stored? (COMPLETE)
+
+**Question:** How do you store LLM prompts?
+
+| Aspect | Our Decision |
+|--------|--------------|
+| **Choice** | ✅ **PROMPTS AS CODE (separate .txt files)** |
+| **Why** | Clean code, Git tracks prompt changes, can A/B test different prompts, non-coders can edit prompts |
+
+**Directory structure:**
+```
+my_project/
+├── prompts/
+│   ├── triage_agent.txt      (even if rules-based, kept for consistency)
+│   ├── action_agent.txt      (LLM edge case prompts)
+│   └── comms_agent.txt       (human-facing explanations)
+├── agent.py
+└── tests/
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 6. THE 5 "THINK ABOUT" PROBLEMS - OUR SOLUTIONS
+
+## Think About #1: Checkpoint & Registry Sync (COMPLETE)
+
+**The Problem:** Agent saves its brain state (checkpoint) in Postgres. Model registry (MLflow) stores models. They can get out of sync.
+
+**Our Solution:**
+
+```python
+def validate_sync(checkpoint, mlflow_registry):
+    issues = []
+    
+    # Check 1: Does model in checkpoint exist?
+    if checkpoint.model_uri:
+        if not mlflow_registry.model_exists(checkpoint.model_uri):
+            issues.append(f"Model {checkpoint.model_uri} missing from registry")
+    
+    # Check 2: Is production model different from checkpoint's expectation?
+    current_prod = mlflow_registry.get_production_model()
+    checkpoint_prod = checkpoint.expected_production_model
+    
+    if current_prod != checkpoint_prod:
+        issues.append(f"Production changed from {checkpoint_prod} to {current_prod}")
+    
+    return issues
+```
+
+**Decision:** On every agent start and before each investigation step, agent runs sync validation. **MLflow is the source of truth** because all production changes require HIL approval recorded in MLflow. If mismatch found, agent automatically updates its state to match MLflow and logs a warning. No human intervention needed for sync resolution.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Think About #2: Agent Wakes Up to Missing Model URI (COMPLETE)
+
+**The Problem:** Agent's checkpoint references a model that no longer exists in MLflow.
+
+**Our Solution:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                     │
+│                    MISSING MODEL URI HANDLING FLOW                                  │
+│                                                                                     │
+│  Agent restarts and loads checkpoint                                                │
+│           │                                                                         │
+│           ▼                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐   │
+│  │ Checkpoint contains model_uri?                                              │   │
+│  │ Example: "mlflow://v2"                                                      │   │
+│  └─────────────────────────────────────────────────────────────────────────────┘   │
+│           │                                                                         │
+│      ┌────┴────┐                                                                    │
+│      │         │                                                                    │
+│      ▼         ▼                                                                    │
+│   EXISTS    MISSING                                                                 │
+│      │         │                                                                    │
+│      ▼         ▼                                                                    │
+│  Continue   ┌─────────────────────────────────────────────────────────────────┐   │
+│  investigation│ 1. LOG: "Model v2 missing"                                     │   │
+│             │ 2. SEND ALERT to dashboard                                       │   │
+│             │ 3. MARK investigation BLOCKED                                    │   │
+│             │ 4. ASK HUMAN: Use fallback?                                      │   │
+│             └─────────────────────────────────────────────────────────────────┘   │
+│                               │                                                     │
+│                  ┌────────────┴────────────┐                                        │
+│                  │                         │                                        │
+│                  ▼                         ▼                                        │
+│           Human says YES              Human says NO                                 │
+│                  │                         │                                        │
+│                  ▼                         ▼                                        │
+│          Use production model        Close investigation                           │
+│          Continue with fallback      Mark as FAILED                                │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Decision:** No automatic fallback. Human must decide. This demonstrates HIL properly.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Think About #3: Two Retrains Don't Become Two Trainings (Idempotency) (COMPLETE)
+
+**The Problem:** Same task submitted twice shouldn't run twice.
+
+**Our Solution:**
+
+```python
+def generate_idempotency_key(investigation, action_type):
+    components = [
+        action_type,                    # "retrain"
+        investigation.drift_feature,    # "euribor3m"  
+        investigation.drift_date_hour,  # "2026-05-05-14"
+        investigation.severity          # "HIGH"
+    ]
+    key = "_".join(components)
+    return hashlib.md5(key.encode()).hexdigest()[:16]
+
+# Queue checks before adding
+if redis.exists(idempotency_key):
+    return "DUPLICATE_IGNORED"
+else:
+    redis.setex(idempotency_key, TTL, "processing")
+    queue.add_task(task)
+```
+
+**Idempotency Key TTL:**
+| Action | TTL |
+|--------|-----|
+| RETRAIN | 24 hours |
+| RETRAIN_URGENT | 1 hour |
+| ROLLBACK | 1 hour |
+| REPLAY_TEST | 1 hour |
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Think About #4: Stale HIL Approval (COMPLETE)
+
+**The Problem:** Human approves old request after new drift arrived.
+
+**Our Solution:**
+
+```python
+def execute_approval(approval_id):
+    approval = db.get_approval(approval_id)
+    
+    # Check if approval is stale (older than 10 minutes)
+    if approval.created_at < (now - timedelta(minutes=10)):
+        return {"status": "EXPIRED", "message": "Approval too old (10 min limit)"}
+    
+    # Check if new drift happened after approval
+    new_drifts = db.get_drifts(after=approval.created_at)
+    if new_drifts:
+        # Add warning but don't auto-cancel
+        return {"status": "NEEDS_REVIEW", 
+                "message": f"New drift detected since approval. {len(new_drifts)} new event(s)"}
+    
+    return execute_action(approval.action)
+```
+
+**Decision:** 10 minute approval validity. New drift = warning, not auto-cancel. Human sees both.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Think About #5: Can Promotion Endpoint Be Called Without Agent? (COMPLETE)
+
+**The Problem:** HTTP endpoint `/promote` - who can call it?
+
+**Our Solution:** ✅ Agent + Emergency Key
+
+```python
+@router.post("/promote")
+async def promote_model(
+    request: PromoteRequest,
+    x_emergency_key: Optional[str] = Header(None)
+):
+    # Emergency bypass
+    if x_emergency_key == os.getenv("EMERGENCY_BYPASS_KEY"):
+        log.warning("EMERGENCY BYPASS used by human!")
+        log.info(f"Promoted {request.model_version} via emergency bypass")
+        audit_log.record("EMERGENCY_PROMOTION", by="human_emergency")
+        return do_promotion(request)
+    
+    # Normal flow: must come from agent with approval
+    validate_agent_signature(request)
+    validate_approval_id(request.approval_id)
+    audit_log.record("PROMOTION", by="agent", approval_id=request.approval_id)
+    return do_promotion(request)
+```
+
+**Decision:** Emergency key stored in `.env`. Normal path = agent + HIL. Emergency path = secret key (logged, alerted).
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 7. CHECKPOINTS & PERSISTENCE DECISIONS (COMPLETE)
+
+## Decision #20: What exactly goes into a checkpoint? (COMPLETE)
+
+**Our Decision:** Complete investigation state
+
+```json
+{
+  "checkpoint_id": "ckpt_20260505_143022_001",
+  "investigation_id": "inv_001",
+  "created_at": "2026-05-05T14:30:22.123Z",
+  "updated_at": "2026-05-05T14:30:22.123Z",
+  
+  "investigation_state": {
+    "status": "WAITING_FOR_HIL",
+    "current_step": "step_3_waiting_approval",
+    "step_history": [
+      {"step": "received_webhook", "timestamp": "..."},
+      {"step": "triaged", "result": "HIGH", "timestamp": "..."},
+      {"step": "action_decided", "result": "RETRAIN", "timestamp": "..."}
+    ]
+  },
+  
+  "drift_data": {
+    "alert_id": "drift_001",
+    "feature": "euribor3m",
+    "psi": 0.35,
+    "severity": "HIGH",
+    "received_at": "2026-05-05T14:30:00Z"
+  },
+  
+  "triage_result": {
+    "severity": "HIGH",
+    "reason": "PSI=0.35 exceeds threshold 0.2",
+    "confidence": 1.0
+  },
+  
+  "action_decision": {
+    "proposed_action": "RETRAIN_SCHEDULED",
+    "confidence": 0.95,
+    "reasoning": "HIGH severity on economic feature"
+  },
+  
+  "hil_request": {
+    "request_id": "hil_001",
+    "sent_at": "2026-05-05T14:30:25Z",
+    "status": "pending",
+    "approved_at": null,
+    "approved_by": null
+  },
+  
+  "queue_task": {
+    "dispatched": false,
+    "task_id": null,
+    "idempotency_key": null
+  },
+  
+  "metadata": {
+    "agent_version": "v1.0.0",
+    "checkpoint_schema_version": "1",
+    "resume_count": 0
+  }
+}
+```
+
+**Why:** Allows full recovery from any crash point.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #21: How often are checkpoints saved? (COMPLETE)
+
+**Our Decision:** Milestones (7 points) + before risky operations
+
+**Milestones:**
+1. investigation_started
+2. triaged
+3. action_decided
+4. hil_request_sent
+5. hil_response_received
+6. task_dispatched
+7. investigation_complete
+
+**Also save before:** Any LLM call, any external API request
+
+**Why:** Balances safety with performance. Never lose more than one step of progress.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #22: What happens when agent wakes up and model URI is missing? (COMPLETE)
+
+**Our Decision:** Ask Human via HIL (no auto-fallback)
+
+**Flow:**
+1. Log error with details
+2. Alert dashboard with visual indicator
+3. Mark investigation BLOCKED
+4. Create HIL request asking human to choose fallback or cancel
+
+**Why:** Safety first. Human has control. No bad automatic decisions.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #23: How does agent detect checkpoint/registry sync issues? (COMPLETE)
+
+**Our Decision:** Validate on every start + before each step. MLflow is source of truth.
+
+**Implementation:**
+```python
+def check_sync():
+    agent_belief = postgres.get("production_model")
+    reality = mlflow.get_production_model()
+    
+    if agent_belief != reality:
+        log_warning(f"Out of sync. Agent: {agent_belief}, MLflow: {reality}")
+        postgres.update("production_model", reality)  # Trust MLflow
+```
+
+**Why:** MLflow is source of truth because all production changes require HIL approval recorded in MLflow.
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 8. HUMAN-IN-THE-LOOP (HIL) DECISIONS (COMPLETE)
+
+## Decision #24: Which actions require HIL approval? (COMPLETE)
+
+| Action | Needs HIL? | Why |
+|--------|------------|-----|
+| MONITOR | ❌ NO | No change |
+| REPLAY_TEST_SET | ❌ NO | Just testing |
+| ALERT_HUMAN | ❌ NO | Just notification |
+| RETRAIN_SCHEDULED | ✅ YES | Creates new model |
+| RETRAIN_URGENT | ✅ YES | Creates new model |
+| ROLLBACK | ✅ YES | Changes production |
+| SWITCH_TO_FALLBACK | ✅ YES | Changes production |
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #25: How long is an approval valid? (COMPLETE)
+
+**Our Decision:** **10 MINUTES**
+
+**Why 10 minutes:**
+- Long enough for a human to notice and respond
+- Short enough that the drift context is still relevant
+- Round number (easy to document and remember)
+
+**Implementation:**
+```python
+def is_approval_valid(approval):
+    age_seconds = (now() - approval.created_at).total_seconds()
+    MAX_AGE_SECONDS = 600  # 10 minutes
+    
+    if age_seconds > MAX_AGE_SECONDS:
+        return False, f"Approval expired after {age_seconds} seconds"
+    return True, "Valid"
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #26: What happens if new drift arrives while waiting for approval? (COMPLETE)
+
+**Our Decision:** Context-based + no auto-cancellation
+
+```python
+def handle_new_drift_during_hil(current, new_drift):
+    # Always start new investigation (separate case)
+    new_inv = start_investigation(new_drift)
+    
+    # Add cross-reference
+    current.related_investigations.append(new_inv.id)
+    
+    # If new drift is HIGHER severity, add warning to current
+    if new_drift.severity > current.severity:
+        current.hil_request.add_warning(
+            f"New HIGHER severity drift detected. This approval may be stale."
+        )
+        dashboard.highlight_warning(current.id)
+    
+    # Never auto-cancel. Let human decide.
+```
+
+**Why:** Human sees both pending approvals with timestamps and can make informed decision.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #27: How does dashboard surface HIL requests? (COMPLETE)
+
+**Our Decision:** **WebSocket (primary) + Polling (fallback)**
+
+**Primary approach:** WebSocket for real-time updates (<100ms latency)
+
+**Fallback approach:** HTTP polling every 2 seconds
+
+**Implementation note:** WebSocket implemented first. If time constraints prevent WebSocket debugging, polling serves as working fallback. System checks WebSocket connection; if fails, auto-falls back to polling.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #28: Can human add comments when approving/rejecting? (COMPLETE)
+
+**Our Decision:** ✅ YES, optional with audit
+
+```json
+{
+  "approval_id": "hil_001",
+  "decision": "APPROVED",
+  "comment": "Interest rates have indeed risen significantly. Proceed with retrain.",
+  "approved_by": "alice@bank.com",
+  "timestamp": "2026-05-05T14:35:22Z"
+}
+```
+
+**Why:** Audit trail. Comments appear in investigation history.
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 9. QUEUE & TASKS DECISIONS (COMPLETE)
+
+## Decision #29: What goes into the idempotency key? (COMPLETE)
+
+**Our Decision:** `hash(action_type + feature + date_hour + severity)`
+
+```python
+def generate_idempotency_key(investigation, action_type):
+    components = [
+        action_type,
+        investigation.drift_feature,
+        investigation.drift_date_hour,
+        investigation.severity
+    ]
+    key = "_".join(components)
+    return hashlib.md5(key.encode()).hexdigest()[:16]
+```
+
+**Why:** Same drift on same feature in same hour → same key → duplicate ignored. Different hour → different key → new retrain allowed.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #30: How long do you remember idempotency keys? (COMPLETE)
+
+| Action Type | TTL |
+|-------------|-----|
+| RETRAIN | 24 hours |
+| RETRAIN_URGENT | 1 hour |
+| ROLLBACK | 1 hour |
+| REPLAY_TEST | 1 hour |
+
+```python
+def get_ttl_for_action(action_type):
+    ttl_map = {
+        "RETRAIN": 86400,
+        "RETRAIN_URGENT": 3600,
+        "ROLLBACK": 3600,
+        "REPLAY_TEST": 3600,
+    }
+    return ttl_map.get(action_type, 3600)
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #31: What's the retry strategy? (COMPLETE)
+
+**Our Decision:** Max 5 retries, exponential backoff (1,2,4,8,16 seconds)
+
+```python
+def calculate_backoff(attempt):
+    return 2 ** (attempt - 1)  # seconds
+```
+
+**What failures to retry:**
+| Failure Type | Retry? |
+|--------------|--------|
+| Network timeout | ✅ YES |
+| Database connection | ✅ YES |
+| Rate limiting (429) | ✅ YES |
+| Authentication error | ❌ NO |
+| Invalid input (400) | ❌ NO |
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #32: What happens to tasks in DLQ? (COMPLETE)
+
+**Our Decision:** No auto-retry. Human review via dashboard.
+
+**DLQ Handling:**
+1. LOG everything (original task, each retry, errors)
+2. ALERT dashboard: "⚠️ DLQ: Task failed"
+3. WAIT for human intervention with dashboard UI buttons: [RETRY NOW] [CANCEL] [VIEW LOGS]
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #33: How does worker notify agent of task completion? (COMPLETE)
+
+**Our Decision:** Status in Postgres (agent reads on resume)
+
+```python
+# Worker completes task
+def complete_task(task_id, result):
+    db.update_task_status(
+        task_id=task_id,
+        status="COMPLETED",
+        result=result,
+        completed_at=now()
+    )
+
+# Agent checks when needed
+def check_task_status(investigation_id):
+    task = db.get_task_by_investigation(investigation_id)
+    if task.status == "COMPLETED":
+        investigation.new_model_version = task.result.model_version
+        investigation.status = "RETRAIN_COMPLETE"
+```
+
+**Why:** No callback to simplify architecture. Agent checks when investigation resumes.
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 10. PROMOTION GATE DECISIONS (COMPLETE)
+
+## Decision #34: What are the exact promotion criteria? (COMPLETE)
+
+**Our Decision:** **AUC > 0.80 AND Recall >= 0.75**
+
+**Day-4 Promotion Checklist (ALL must pass):**
+- ✅ Model passed all integration tests
+- ✅ AUC > 0.80
+- ✅ Recall >= 0.75 (threshold tuned for this)
+- ✅ No data leakage (duration column dropped, pdays handled)
+- ✅ Drift acceptable on reference data
+- ✅ Model card complete with hash + environment fingerprint
+
+**Why:** Matches project's "recall >= 0.75" requirement. Adds AUC > 0.80 (industry standard for "good model"). Balanced - not too strict, not too loose.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #35: Can promotion endpoint be called without agent? (COMPLETE)
+
+**Our Decision:** ✅ **Agent + Emergency Key (Option C)**
+
+**Why:** Normal operation uses agent with HIL approval. Emergency bypass via secret key allows humans to fix critical issues when agent is unavailable. All emergency promotions are logged and flagged for security review.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #36: What's the emergency bypass mechanism? (COMPLETE)
+
+**Our Decision:** **Secret HTTP Header (Option A)** - with upgrade to JWT if time permits
+
+```bash
+curl -X POST /promote \
+  -H "X-Emergency-Key: supersecret123" \
+  -d '{"model_version": "v3"}'
+```
+
+**Why:** Simple. One line of code to check header. Key stored in `.env` file, not in code. HTTPS ensures header encryption. For production, upgrade to JWT.
+
+| Status | ✅ COMPLETE (baseline: Option A, stretch: Option C) |
+
+---
+
+## Decision #37: What audit logging is required? (COMPLETE)
+
+**Our Decision:** Keep both options based on time
+
+**Minimum viable (time-constrained):** Log who, when, what model, approval ID
+
+**Full implementation (if time permits):** Add drift context, model metrics before/after
+
+```json
+{
+  "timestamp": "2026-05-05T14:30:22Z",
+  "promoted_by": "agent_supervisor",
+  "approval_id": "hil_001",
+  "approved_by_human": "alice@bank.com",
+  "old_model": "v1 (AUC 0.82, Recall 0.76)",
+  "new_model": "v3 (AUC 0.85, Recall 0.81)",
+  "drift_context": {
+    "feature": "euribor3m",
+    "psi": 0.35,
+    "severity": "HIGH"
+  },
+  "method": "normal_agent",
+  "emergency_used": false
+}
+```
+
+**Implementation approach:** Start with minimal. If time remains, extend to full.
+
+| Status | ✅ COMPLETE (time-dependent) |
+
+---
+
+# 11. DASHBOARD DECISIONS (COMPLETE)
+
+## Decision #38: How does dashboard get data? (COMPLETE)
+
+**Our Decision:** Keep both options based on time
+
+| Option | Time to implement | Difficulty |
+|--------|------------------|------------|
+| **A** (Direct DB) | 1 hour | Easy |
+| **B** (API calls) | 2-3 hours | Medium |
+| **C** (Mix) | 4-5 hours | Hard |
+
+**Implementation approach:** Start with Option A (Direct DB) - fastest. If time permits, refactor to Option B (API calls).
+
+| Status | ✅ COMPLETE (time-dependent) |
+
+---
+
+## Decision #39: What auto-refresh rate? (COMPLETE)
+
+**Our Decision:** **2 seconds**
+
+**Why 2 seconds is best:**
+- Human reaction time to see and click button: ~1-2 seconds
+- 1 second = too aggressive (wastes bandwidth for no gain)
+- 5 seconds = human might see stale data and approve wrong thing
+- 2 seconds = sweet spot
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #40: What information is shown? (COMPLETE)
+
+| Section | Show? |
+|---------|-------|
+| Registry state (models, versions, metrics) | ✅ YES |
+| Drift status (feature, PSI, severity) | ✅ YES |
+| Agent investigations list (open) | ✅ YES |
+| Agent investigations list (closed/history) | ✅ YES (collapsed by default) |
+| Queue depth + DLQ count | ✅ YES |
+| HIL inbox with approve/reject buttons | ✅ YES |
+| System health (services up/down) | 🤷 Optional (nice to have) |
+
+**Decision:** Show all except maybe historical investigations (collapse by default). May adjust during implementation.
+
+| Status | ✅ COMPLETE (may adjust during implementation) |
+
+---
+
+# 12. CI & TESTING DECISIONS (COMPLETE)
+
+## Decision #41: How to mock LLM for tests? (COMPLETE)
+
+**Our Decision:** **Keyword-based dictionary (The "Just Right" approach)**
+
+```python
+class MockLLM:
+    def __init__(self):
+        self.responses = {
+            "euribor3m": '{"severity": "HIGH", "reason": "PSI exceeds threshold"}',
+            "cons.price.idx": '{"severity": "HIGH", "reason": "Economic feature drift"}',
+            "job": '{"severity": "MEDIUM", "reason": "Categorical distribution changed"}',
+            "age": '{"severity": "LOW", "reason": "Minor drift"}',
+            "recent retrain": '{"action": "MONITOR", "reason": "Just retrained", "confidence": 0.8}',
+            "multiple drifts": '{"action": "ROLLBACK", "reason": "Systemic issue", "confidence": 0.9}',
+            "default": '{"action": "RETRAIN", "confidence": 0.95}'
+        }
+        self.call_count = 0
+        self.last_prompt = None
+    
+    def generate(self, prompt):
+        self.call_count += 1
+        self.last_prompt = prompt
+        for keyword, response in self.responses.items():
+            if keyword.lower() in prompt.lower():
+                return response
+        return self.responses["default"]
+    
+    def reset(self):
+        self.call_count = 0
+        self.last_prompt = None
+```
+
+**Why:** Not too simple (has keyword matching), not over-engineered (no fancy patterns). Maintainable, testable, realistic.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #42: What are the snapshot test fixtures? (COMPLETE)
+
+**Our Decision:** **Option B (Full trajectory)**
+
+```json
+{
+  "test_id": "test_001",
+  "input": {
+    "feature": "euribor3m",
+    "psi": 0.35
+  },
+  "trajectory": [
+    {"step": "triage", "input": {...}, "output": {"severity": "HIGH"}},
+    {"step": "action", "input": {...}, "output": {"action": "RETRAIN"}},
+    {"step": "comms", "input": {...}, "output": "Explanation text..."}
+  ],
+  "final_action": "RETRAIN",
+  "hil_requested": true
+}
+```
+
+**Why:** Required by project brief: "routing logic and full trajectories under regression test"
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #43: What's the fidelity test input? (COMPLETE)
+
+**Our Decision:** **Option A (Single fixed input with versioned expectation)**
+
+```python
+# tests/test_fidelity.py
+
+FIDELITY_TEST_INPUT = {
+    "age": 35,
+    "job": "admin",
+    "marital": "married",
+    "education": "university",
+    "default": "no",
+    "housing": "yes",
+    "loan": "no",
+    "contact": "cellular",
+    "month": "may",
+    "day_of_week": "mon",
+    "campaign": 1,
+    "pdays": 999,
+    "previous": 0,
+    "poutcome": "nonexistent",
+    "emp.var.rate": 1.1,
+    "cons.price.idx": 93.994,
+    "cons.conf.idx": -36.4,
+    "euribor3m": 1.234,
+    "nr.employed": 5228.1
+}
+
+# Generate this once when model is trained
+EXPECTED_PROBABILITY = 0.087123456789  # 12 decimal places
+
+def test_fidelity():
+    model = load_production_model()
+    result = model.predict_proba(FIDELITY_TEST_INPUT)[0][1]
+    assert abs(result - EXPECTED_PROBABILITY) < 1e-12, \
+        f"Model changed! Expected {EXPECTED_PROBABILITY}, got {result}"
+```
+
+**Why:** Deterministic, catches ANY change to model (even floating point differences), fast.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #44: What CI platform? (COMPLETE)
+
+**Our Decision:** **Option A (GitHub Actions)**
+
+**Why:** Your repo is on GitHub (required by submission), free for public repos, built-in Docker support, easy to configure.
+
+```yaml
+# .github/workflows/test.yml
+name: CI Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: docker-compose up -d
+      - run: python tests/test_agent.py
+      - run: python tests/test_fidelity.py
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 13. LLM CHOICE DECISIONS (COMPLETE)
+
+## Decision #45 & #46: Which LLM provider and model? (COMPLETE)
+
+**Our Decision:** **OpenAI GPT-4o-mini (primary) + Groq Llama (free fallback)**
+
+| Provider | Model | Why |
+|----------|-------|-----|
+| **Primary** | OpenAI GPT-4o-mini | Cheapest OpenAI option ($0.15/1M tokens), good enough for comms agent |
+| **Fallback** | Groq Llama 3 8B | Free, fast inference, provides redundancy |
+
+**Environment variables:**
+```bash
+OPENAI_API_KEY=sk-your-openai-key-here
+GROQ_API_KEY=gsk_your-groq-key-here
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #47: Why this choice? (One line for submission) (COMPLETE)
+
+**Our Decision:** *"GPT-4o-mini (primary) + Groq Llama (free fallback) for cost-effective reliability."*
+
+**Alternative options (choose one during submission):**
+- Option 1: *"GPT-4o-mini chosen for lowest OpenAI cost ($0.15/M tokens) and Groq fallback provides free redundancy."*
+- Option 2: *"OpenAI GPT-4o-mini ensures quality while Groq Llama fallback guarantees availability without additional cost."*
+- Option 3: *"GPT-4o-mini (primary) + Groq Llama (free fallback) for cost-effective reliability."*
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #48: How to handle LLM API failures? (COMPLETE)
+
+**Our Decision:** **Option B (Retry + fallback to template text)**
+
+```python
+def call_llm_with_fallback(prompt):
+    # Try OpenAI with retries
+    for attempt in range(3):
+        try:
+            return openai_client.generate(prompt)
+        except Exception as e:
+            wait = 2 ** attempt
+            time.sleep(wait)
+    
+    # Fallback to Groq
+    try:
+        return groq_client.generate(prompt)
+    except Exception as e:
+        pass
+    
+    # Final fallback: template text
+    return "[LLM UNAVAILABLE] Drift detected. Please check dashboard for details."
+```
+
+**Why:** Graceful degradation. System still works even when LLM APIs fail.
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 14. DOCKER & DEPLOYMENT DECISIONS (COMPLETE)
+
+## Decision #49: How many Docker services? (COMPLETE)
+
+**Our Decision:** **7 services**
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| Postgres | 5432 | LangGraph checkpoints + predictions log + platform state |
+| Redis | 6379 | Queue + DLQ + idempotency keys |
+| MLflow | 5000 | Model registry (own service, Postgres backend + artifact volume) |
+| FastAPI (Platform) | 8001 | Model serving + drift detection + /promote endpoint |
+| Agent (LangGraph) | 8002 | Supervisor + sub-agents + webhook receiver |
+| Dashboard | 8501 | UI for humans (tech TBD — Streamlit or Tailwind) |
+| Worker | — | Consumes queue tasks (retrain, replay, rollback) |
+
+**Why MLflow is its own service:** MLflow's default SQLite backend has file-locking issues in Docker environments with concurrent writers. Postgres backend gives proper persistence. Artifact storage on a named volume survives container restarts.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #50: What environment variables? (COMPLETE)
+
+**Our Decision:**
+
+```bash
+# .env.example
+OPENAI_API_KEY=your_key_here
+GROQ_API_KEY=your_groq_key_here
+POSTGRES_PASSWORD=change_me
+REDIS_PASSWORD=change_me
+EMERGENCY_BYPASS_KEY=change_me_in_production
+
+# Optional with defaults
+APPROVAL_TIMEOUT_MINUTES=10
+DRIFT_WINDOW_SIZE=500
+DRIFT_PSI_THRESHOLD_HIGH=0.2
+DRIFT_PSI_THRESHOLD_CRITICAL=0.25
+AGENT_HIL_POLL_INTERVAL=2
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #51: How do services find each other? (COMPLETE)
+
+**Our Decision:** Docker Compose default network + service names as hostnames
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    hostname: postgres
+  
+  redis:
+    hostname: redis
+  
+  mlflow:
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql+psycopg2://...
+      - MLFLOW_ARTIFACT_ROOT=/mlflow/artifacts
+
+  platform:
+    environment:
+      - AGENT_URL=http://agent:8002
+      - POSTGRES_HOST=postgres
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+
+  agent:
+    environment:
+      - POSTGRES_HOST=postgres
+      - REDIS_HOST=redis
+      - PLATFORM_URL=http://platform:8001
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+
+  worker:
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+```
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #52: What volumes persist data? (COMPLETE)
+
+| Service | Volume | Persist? | Why |
+|---------|--------|----------|-----|
+| Postgres | `postgres_data` | ✅ YES | Checkpoints, investigations |
+| Redis | `redis_data` | ✅ YES | Queue tasks, idempotency keys |
+| MLflow | `mlflow_artifacts` | ✅ YES | Saved models |
+| FastAPI | None | ❌ NO | Stateless |
+| Agent | None | ❌ NO | Stateless |
+| Streamlit | None | ❌ NO | Stateless |
+| Worker | None | ❌ NO | Stateless |
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 15. DOCUMENTATION DECISIONS (COMPLETE)
+
+## Decision #53: What diagram tool for ARCH.md? (COMPLETE)
+
+**Our Decision:** **Mermaid (primary) + Draw.io (optional)**
+
+```mermaid
+flowchart TB
+    subgraph Platform["Model Platform"]
+        FastAPI[FastAPI Server]
+        Drift[Drift Calculator]
+    end
+    # ... rest of diagram
+```
+
+**Why Mermaid:** Lives in markdown, version controlled, no external files. Optional Draw.io PNG export for nicer visuals in presentation.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #54: What level of detail in RUNBOOK.md? (COMPLETE)
+
+**Our Decision:** Full sections with exact commands
+
+**Required sections:**
+1. Prerequisites (Docker, Docker Compose, git)
+2. Step 1: `git clone ...`
+3. Step 2: `cp .env.example .env` and fill keys
+4. Step 3: `docker-compose up`
+5. Step 4: Access services (ports)
+   - Dashboard: http://localhost:8501
+   - Platform API: http://localhost:8001
+   - Agent API: http://localhost:8002
+6. Step 5: How to test drift (curl command or test script)
+7. Step 6: How to approve HIL in dashboard
+8. Troubleshooting: common issues
+
+| Status | ✅ COMPLETE |
+
+---
+
+# 16. COMPLETE DECISION SUMMARY TABLE
+
+| # | Decision | Our Choice | Status |
+|---|----------|------------|--------|
+| 1 | ML Model | LightGBM (class_weight=balanced, random_state=42) | ✅ COMPLETE |
+| 2 | pdays==999 handling | Boolean flag `contacted_before`, drop raw pdays | ✅ COMPLETE |
+| 3 | Drift window size | 500 predictions (sliding window) | ✅ COMPLETE |
+| 4 | Drift frequency | Recalculate every 50 new predictions | ✅ COMPLETE |
+| 5 | Predictions log storage | Postgres table `predictions_log` | ✅ COMPLETE |
+| 6 | PSI thresholds | <0.1 LOW, 0.1-0.2 MED, 0.2-0.25 HIGH, ≥0.25 CRIT | ✅ COMPLETE |
+| 7 | Chi² thresholds | p>0.05 LOW, 0.01-0.05 MED, ≤0.01 HIGH | ✅ COMPLETE |
+| 8 | Registry persistence | MLflow own service (:5000), Postgres backend + volume | ✅ COMPLETE |
+| 9 | Webhook vs Polling | Webhooks | ✅ COMPLETE |
+| 10 | Polling interval | N/A (webhooks chosen) | ✅ COMPLETE |
+| 11 | Webhook payload | JSON with schema_version | ✅ COMPLETE |
+| 12 | HTTP status codes | Standard REST codes | ✅ COMPLETE |
+| 13 | Triage agent | Decision Tree (NO LLM) | ✅ COMPLETE |
+| 14 | Severity rules | PSI thresholds + economic escalation | ✅ COMPLETE |
+| 15 | Action agent | Rules + LLM edge cases | ✅ COMPLETE |
+| 16 | Available actions | 7 actions | ✅ COMPLETE |
+| 17 | Action trigger logic | Priority-based rules (7 rules) | ✅ COMPLETE |
+| 18 | Comms agent | Pure LLM (REQUIRED) | ✅ COMPLETE |
+| 19 | Prompts storage | Separate .txt files | ✅ COMPLETE |
+| 20 | Checkpoint content | Complete investigation state | ✅ COMPLETE |
+| 21 | Checkpoint frequency | Milestones + before risky ops | ✅ COMPLETE |
+| 22 | Missing model URI | Ask human via HIL | ✅ COMPLETE |
+| 23 | Sync detection | Validate + trust MLflow | ✅ COMPLETE |
+| 24 | HIL required actions | RETRAIN*, ROLLBACK, SWITCH_TO_FALLBACK | ✅ COMPLETE |
+| 25 | Approval validity | 10 minutes | ✅ COMPLETE |
+| 26 | New drift during HIL | Parallel + warning, no auto-cancel | ✅ COMPLETE |
+| 27 | Dashboard HIL surface | WebSocket + polling fallback | ✅ COMPLETE |
+| 28 | HIL comments | Optional with audit | ✅ COMPLETE |
+| 29 | Idempotency key | hash(action+feature+hour+severity) | ✅ COMPLETE |
+| 30 | Idempotency TTL | 24h retrain, 1h others | ✅ COMPLETE |
+| 31 | Retry strategy | 5 retries, exp backoff (1,2,4,8,16s) | ✅ COMPLETE |
+| 32 | DLQ handling | No auto-retry, human via dashboard | ✅ COMPLETE |
+| 33 | Task completion notification | Status in Postgres | ✅ COMPLETE |
+| 34 | Promotion criteria | AUC>0.80 AND Recall>=0.75 | ✅ COMPLETE |
+| 35 | Direct promotion bypass | Agent + Emergency Key | ✅ COMPLETE |
+| 36 | Emergency mechanism | Secret header (JWT stretch) | ✅ COMPLETE |
+| 37 | Audit logging | Minimal or full based on time | ✅ COMPLETE |
+| 38 | Dashboard data source | Direct DB or API based on time | ✅ COMPLETE |
+| 39 | Refresh rate | 2 seconds | ✅ COMPLETE |
+| 40 | Dashboard sections | All (history collapsed) | ✅ COMPLETE |
+| 41 | LLM mock | Keyword-based dictionary | ✅ COMPLETE |
+| 42 | Snapshot fixtures | Full trajectory | ✅ COMPLETE |
+| 43 | Fidelity test input | Single fixed input with versioning | ✅ COMPLETE |
+| 44 | CI platform | GitHub Actions | ✅ COMPLETE |
+| 45-46 | LLM provider | GPT-4o-mini + Groq fallback | ✅ COMPLETE |
+| 47 | LLM reason | One-liner (choose during submission) | ✅ COMPLETE |
+| 48 | LLM failure handling | Retry + fallback to template | ✅ COMPLETE |
+| 49 | Docker services | 7 services (MLflow own service added) | ✅ COMPLETE |
+| 55 | Output-distribution drift | PSI on 10 bins of predict_proba scores | ✅ COMPLETE |
+| 56 | Retrain worker responsibilities | Retrain → Staging only → agent+HIL for Production | ✅ COMPLETE |
+| 57 | Agent→Platform promotion contract | POST /promote JSON schema v1.0 + X-Agent-Key | ✅ COMPLETE |
+| 58 | Bootstrap / initial training flow | Dedicated `trainer` Docker service, runs once, exits | ✅ COMPLETE |
+| 59 | Reference distribution storage | Postgres `drift_reference` table, seeded by trainer | ✅ COMPLETE |
+| 60 | Complete API endpoint inventory | 5 platform + 7 agent endpoints, fully listed | ✅ COMPLETE |
+| 61 | Worker service design | Custom async BLPOP loop, delayed queue via Redis ZADD | ✅ COMPLETE |
+| 62 | DB schema ownership & init | SQLAlchemy create_all per service, LangGraph auto-creates | ✅ COMPLETE |
+| 63 | Startup sequence & health checks | 8-service dependency chain with healthchecks | ✅ COMPLETE |
+| 64 | Demo simulation plan | demo_drift.py --reset / --inject, 6-step Friday script | ✅ COMPLETE |
+| 50 | Environment variables | As defined above | ✅ COMPLETE |
+| 51 | Service discovery | Docker Compose hostnames | ✅ COMPLETE |
+| 52 | Volumes | Postgres, Redis, MLflow | ✅ COMPLETE |
+| 53 | Diagram tool | Mermaid + Draw.io optional | ✅ COMPLETE |
+| 54 | RUNBOOK detail | Full sections with commands | ✅ COMPLETE |
+
+---
+
+# 17. SUBMISSION REQUIREMENTS
+
+## GitHub Repository Requirements
+
+```
+Public GitHub repository
+    │
+    ├── Tag: v0.1.0-week5 (created before Thursday midnight)
+    │
+    ├── Must work with: docker-compose up from clean clone
+    │
+    └── Must have: cp .env.example .env + fill secrets
+```
+
+## Submission Message Format
+
+```
+Project 5 - [Name 1] | [Name 2]
+
+Repo: https://github.com/yourusername/project-5
+
+Tag: v0.1.0-week5
+
+Dataset: UCI Bank Marketing (bank-additional-full.csv)
+
+Model: [registered name + version] (Test AUC: [n] | Test F1: [n])
+
+Operating threshold: [n] (rule: recall >= 0.75)
+
+LLM: OpenAI GPT-4o-mini + Groq Llama fallback - chosen because cost-effective reliability with free redundancy
+```
+
+## README Requirements (3 Files)
+
+| File | What it is | Required Content |
+|------|-----------|------------------|
+| **ARCH.md** | Architecture explanation | Mermaid diagrams + explanation of each component |
+| **DECISIONS.md** | Design decisions | All 64 decisions with reasoning |
+| **RUNBOOK.md** | How to run | Step-by-step commands, ports, troubleshooting |
+
+---
+
+# 18. KEY TERMINOLOGY REFERENCE
+
+| Term | Simple Definition | Used For |
+|------|------------------|----------|
+| **PSI** | Detects change in NUMERICAL data shape | Drift detection |
+| **Chi²** | Detects change in CATEGORICAL data distribution | Drift detection |
+| **Redis Queue** | Smart to-do list with retries + crash survival | Async task management |
+| **DLQ** | Dead Letter Queue - failed tasks bucket | Error handling |
+| **MLflow** | Library catalog for models | Model registry |
+| **FastAPI** | Web framework for predictions | Model serving |
+| **LangGraph** | Framework for building AI agents with memory | Agent orchestration |
+| **Checkpoint** | Save game feature for agent | Persistence |
+| **HIL** | Human-in-the-Loop - approval before actions | Safety |
+| **Idempotency** | Same operation twice = same result | Duplicate prevention |
+| **Exponential Backoff** | Wait longer each retry | Resilient retries |
+| **Webhook** | Platform calls agent when drift happens | Communication |
+| **Polling** | Agent asks platform every N seconds | Communication |
+| **Supervisor Topology** | Boss agent manages specialists | Agent architecture |
+| **Regression Test** | Ensures fixed bugs stay fixed | CI testing |
+| **Snapshot Trajectory** | Saved agent thought process for testing | CI testing |
+| **Fidelity Test** | Ensures model output doesn't change | CI testing |
+
+---
+
+# 19. FINAL CHECKLIST BEFORE SUBMISSION
+
+## Pre-Submission Checklist
+
+- [ ] `docker-compose up` works from clean clone
+- [ ] `.env.example` exists with placeholders
+- [ ] Tag `v0.1.0-week5` exists on GitHub
+- [ ] Drift demo works (shift euribor3m + one categorical)
+- [ ] Agent pauses for HIL approval
+- [ ] Queue processes tasks with retries
+- [ ] Checkpoints survive agent restart (test by killing agent mid-investigation)
+- [ ] CI passes (tests run with mocked LLM)
+- [ ] README has ARCH.md, DECISIONS.md, RUNBOOK.md
+- [ ] Both partners understand ALL code
+
+## Platform Implementation Checklist (DECISIONS COMPLETE — Ready to Code)
+
+- [ ] LightGBM pipeline: StandardScaler on numerics, OrdinalEncoder on categoricals
+- [ ] Preprocessing: drop `duration`, create `contacted_before` flag from pdays==999, treat 'unknown' as real category
+- [ ] Train with 60/20/20 stratified split, random_state=42
+- [ ] Tune threshold: highest value where recall >= 0.75 on validation split
+- [ ] Register in MLflow with artifact triple (model binary, input schema, model card with hash + env fingerprint)
+- [ ] MLflow service: own Docker container, Postgres backend, `mlflow_artifacts` volume
+- [ ] FastAPI `/predict` endpoint: Pydantic request/response, structured errors (never stack traces)
+- [ ] Drift calculator: PSI on numerics, chi² on categoricals, PSI on output probabilities (Decision #55)
+- [ ] Recalculate drift every 50 predictions over a rolling window of 500 (Decisions #3 and #4)
+- [ ] Store all predictions in `predictions_log` Postgres table (Decision #5)
+- [ ] Webhook sender: POST to agent on severity change, 3 retries with exponential backoff
+- [ ] `/promote` endpoint: validates agent signature + promotion gate checklist (Decision #57)
+- [ ] Promotion gate: AUC > 0.80, Recall >= 0.75, no leakage, model card complete
+- [ ] Worker promotes to Staging only — never directly to Production (Decision #56)
+
+## Agent Implementation Checklist (COMPLETE - Ready to Code)
+
+- [x] Webhook receiver endpoint
+- [x] Triage agent (decision tree, no LLM)
+- [x] Action agent (rules for 90%, LLM for edge cases)
+- [x] Comms agent (pure LLM for human text)
+- [x] Postgres checkpoints at milestones
+- [x] HIL pause and approval flow
+- [x] Redis queue with idempotency keys
+- [x] Exponential backoff retries (5 attempts)
+- [x] DLQ for failed tasks
+- [x] Sync validation with MLflow as source of truth
+- [x] Missing model URI handling (ask human)
+- [x] 10-minute approval validity
+- [x] Parallel investigations for new drift during HIL
+- [x] WebSocket + polling fallback for dashboard
+- [x] Optional HIL comments with audit
+
+---
+
+# 20. CODING GUIDELINES - AGENT BRANCH
+
+I have fully internalized all 18 sections of the coding guidelines for the Agent branch.
+
+## MEMORIZATION CONFIRMATION
+
+### 1. PROJECT STRUCTURE ✅
+- Separate routers, services, schemas (no 600-line main.py)
+- Prompts in `.txt` files, never inline strings
+- One obvious purpose per file (describe in one sentence)
+- No `utils.py`, `helpers.py`, `misc.py` - use descriptive names
+- APIRouter from day one
+
+### 2. ASYNC EVERYWHERE ✅
+- Zero blocking I/O in request paths
+- `httpx.AsyncClient` for HTTP calls
+- SQLAlchemy 2.0 async with `asyncpg`
+- `redis.asyncio` for Redis
+- `AsyncOpenAI` for LLM calls
+- `asyncio.gather()` for concurrent calls
+- Open async clients ONCE in lifespan, reuse across requests
+
+### 3. LIFESPAN & SINGLETONS ✅
+- `@asynccontextmanager` lifespan function
+- Attach to `app.state` (llm, http, redis, engine)
+- Shutdown disposes everything
+- No module-level globals for resources
+- No clients inside route handlers
+
+### 4. DEPENDENCY INJECTION ✅
+- Routes declare needs with `Depends()`
+- `dependencies.py` with: get_session, get_llm, get_http_client, get_redis, get_settings
+- Session uses `yield` pattern (auto-closes)
+- `app.dependency_overrides` for tests (no monkey-patching)
+- No manual session construction in routes
+
+### 5. CONFIGURATION ✅
+- Single Settings class with `pydantic-settings`, `extra="forbid"`
+- Required fields with `Field(...)` - app refuses start if missing
+- `@lru_cache(maxsize=1)` wrapper - loaded once
+- No `os.getenv()` outside Settings class
+- `.env.example` with placeholder values
+
+### 6. PYDANTIC AT EVERY BOUNDARY ✅
+- Every external data crossing boundary gets Pydantic model
+- Webhook payload, triage result, action decision, HIL requests, queue tasks - all typed
+- LLM structured outputs use Pydantic models (no regex parsing)
+- Validation ONCE at boundary - trust types inside
+- `Literal` types for constrained values, `Field()` for constraints
+
+### 7. ERROR HANDLING ✅
+- No bare `except:` - catch specific types
+- Never silently swallow exceptions - log always
+- `HTTPException` with correct status codes (never 200 OK with error body)
+- No stack traces to clients - log full trace server-side
+- Structured errors (error + retryable boolean) from tools
+- Every external call has timeout (`httpx.AsyncClient(timeout=10.0)`)
+
+### 8. RETRIES ✅
+- `tenacity` for retry logic with exponential backoff
+- Retry only transient errors (timeouts, network, 429)
+- NEVER retry 4xx errors
+- Maximum attempt count (don't retry forever)
+- Webhook failures logged but don't break user response
+
+### 9. LOGGING ✅
+- `structlog` for JSON-structured logging (never `print()`)
+- Log with named fields: `log.info("investigation.started", alert_id=..., feature=...)`
+- Never log secrets, API keys, passwords, PII
+- Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+### 10. CACHING ✅
+- `@lru_cache(maxsize=1)` on Settings getter
+- Also on deterministic, expensive, pure functions
+- TTL cache for external calls stable within windows
+- Document TTL choices ("10 minutes" is a decision)
+- Never cache auth tokens, mutable config, expiring items
+
+### 11. PROMPTS ✅
+- `prompts/` directory as `.txt` files in version control
+- Separate system prompt from user prompt
+- Know what belongs in prompts vs tools vs constants
+- Prompts are code - version, review, defend in presentation
+
+### 12. API CONTRACTS ✅
+- `response_model` on every endpoint (no raw DB rows)
+- Response model shows only what client needs
+- Proper HTTP status codes: 202, 400, 401, 404, 409, 422, 500
+
+### 13. SECURITY ✅
+- `.env` in `.gitignore` from commit zero
+- `.env.example` with placeholder values committed
+- No hardcoded secrets or API keys
+- `gitleaks` pre-commit hook
+- API key validation for agent endpoints (shared secret header)
+- Rotate immediately if secret committed
+
+### 14. GIT HYGIENE ✅
+- Branch: `feature/agent`
+- Conventional commits: `feat(agent):`, `fix(agent):`, `test(agent):`, `refactor(agent):`
+- Imperative mood: "add" not "added"
+- Summary under 72 chars, no ending period
+- No direct commits to main
+- Squash commits when merging
+
+### 15. TESTING ✅
+- Test Pydantic schemas with valid and invalid data
+- Test each agent function in isolation with mocked LLM
+- One end-to-end test through full supervisor with all external calls mocked
+- Keyword-based MockLLM class with `call_count` and `last_prompt`
+- AAA pattern: Arrange, Act, Assert
+- GitHub Actions on every push and PR
+- Minimum 80% coverage on critical paths
+- Never test third-party libraries or framework boilerplate
+
+### 16. DOCKER ✅
+- One service per container (agent has own Dockerfile)
+- Docker Compose service names (not hardcoded IPs)
+- Named volumes for Postgres and Redis
+- Environment variables via docker-compose (never hardcoded)
+- No hardcoded environment-specific URLs
+- `.dockerignore` excludes `.git`, `.env`, `__pycache__`, `.venv`, tests, docs
+
+### 17. DOCUMENTATION ✅
+- Google-style docstrings on public modules, classes, functions
+- Inline comments explain WHY, not WHAT
+- README: what, setup, run, env vars, structure
+
+### 18. WHAT NOT TO DO (ANTIPATTERNS) ✅
+- ❌ No `os.getenv()` scattered
+- ❌ No `print()` in production
+- ❌ No bare `except:`
+- ❌ No `except: pass`
+- ❌ No 200 OK with error body
+- ❌ No blocking I/O in async functions
+- ❌ No globals for shared resources
+- ❌ No clients per-request
+- ❌ No inline prompt strings
+- ❌ No hardcoded URLs, model names, config
+- ❌ No committing `.venv/`, `.env`, secrets
+
+---
+
+## READY FOR AGENT BRANCH IMPLEMENTATION
+
+I have fully memorized all guidelines and will ensure the Agent branch code adheres to:
+
+- Async everywhere with proper lifespan management
+- Pydantic models at every boundary
+- Dependency injection with overrides for testing
+- Structured logging with `structlog`
+- Retry logic with `tenacity`
+- Prompts as separate `.txt` files
+- Proper error handling with specific exceptions
+- No antipatterns from section 18
+
+---
+
+# 21. COMPLETE EXPLANATION - HOW EVERYTHING WORKS TOGETHER
+
+## What We Built and Why
+
+We have designed a complete **Drift Triage Co-Pilot** system that automatically monitors a machine learning model in production, detects when the data starts changing (drift), and takes intelligent action to keep the model accurate - all while keeping a human in the loop for important decisions.
+
+## The Core Problem We're Solving
+
+Banks use ML models to predict which customers will buy term deposits. But the economy changes. Interest rates (euribor3m) go up and down. Customer behavior changes. A model trained on old data becomes less accurate over time. This is called **drift**.
+
+## Our Solution Architecture
+
+The system has four main layers:
+
+### Layer 1: The Platform (MLflow + FastAPI) - PENDING
+
+This is where the ML model lives. It:
+- Trains a binary classifier on bank data
+- Registers models in MLflow with versioning
+- Serves predictions via a FastAPI endpoint
+- Continuously calculates drift using PSI (for numbers) and Chi² (for categories)
+- Sends webhook alerts when drift is detected
+
+*These decisions are pending and will be made during implementation.*
+
+### Layer 2: The Agent (LangGraph Supervisor) - COMPLETE
+
+This is the brain of the system. We made 46 decisions about how it works:
+
+- **Webhooks, not polling** - We chose webhooks for real-time drift detection. Economic features like euribor3m change fast; we can't afford to wait 60 seconds for a poll.
+- **Three sub-agents with a supervisor** - Triage (decision tree, NO LLM) determines severity from PSI numbers. Action (rules for 90%, LLM for edge cases) decides what to do. Comms (pure LLM) talks to humans.
+- **Triage uses a decision tree, not an LLM** - PSI is a number. Comparing it to 0.2 doesn't need an AI. This saves money and latency.
+- **Action uses rules for 90% of cases, LLM only for edge cases** - Recent retrain? Multiple drifts? Borderline scores? That's where the LLM adds value. Standard cases use fast, deterministic rules.
+- **Comms uses an LLM for all human-facing text** - Humans don't read PSI numbers. They read sentences. The LLM translates "PSI=0.35, severity=HIGH" into "Interest rates have risen significantly. The model needs retraining."
+
+### Layer 3: Persistence & Checkpoints - COMPLETE
+
+The agent saves its brain state to Postgres at 7 milestones and before any risky operation. If the agent crashes, it resumes exactly where it left off. We solved the 5 "Think About" problems:
+
+1. **Checkpoint & Registry Sync** - MLflow is source of truth. Agent auto-updates to match.
+2. **Missing Model URI** - Ask human via HIL. No automatic fallback (safety first).
+3. **Duplicate Retrains** - Idempotency keys (hash of action+feature+hour+severity) with TTL (24h for retrain, 1h for others).
+4. **Stale HIL Approval** - 10 minute expiry. New drift adds warning, doesn't auto-cancel.
+5. **Direct Promotion Bypass** - Agent + emergency key. Normal = agent+HIL, emergency = secret header.
+
+### Layer 4: Async Tasks (Redis Queue + DLQ) - COMPLETE
+
+Slow actions (retraining, replaying test sets) go into a Redis queue. Worker picks them up. If a task fails, it retries with exponential backoff (1,2,4,8,16 seconds). After 5 failures, it goes to the Dead Letter Queue for human review. Idempotency keys prevent duplicate tasks.
+
+### Layer 5: Dashboard (Streamlit) - COMPLETE
+
+The human window into the system. Shows registry state, active investigations, queue depth, and HIL inbox with Approve/Reject buttons. Updates in real-time via WebSocket (with polling fallback). Refresh every 2 seconds.
+
+## Key Design Philosophies
+
+1. **LLM only where it adds value** - Severity detection uses decision trees (free, fast). Action decisions use rules (90% of cases). Edge cases use LLM. Comms agent uses LLM for human text.
+2. **Safety first** - No automatic production changes without HIL approval.
+3. **Resilience** - Checkpoints survive crashes. Queue persists. Retries with backoff.
+4. **Testability** - MockLLM with keyword-based responses. Full trajectory snapshots. 1e-12 fidelity test.
+5. **Professional Python** - Async everywhere. Pydantic at boundaries. Dependency injection. Structured logging. No antipatterns.
+
+## The Complete Flow
+
+1. Customer calls prediction endpoint → model predicts
+2. Drift calculator compares recent data to training data
+3. PSI > 0.2 detected on euribor3m → drift alert
+4. Webhook sent to LangGraph Supervisor
+5. Supervisor creates investigation, saves checkpoint
+6. Triage agent (decision tree) → severity = HIGH (escalated to CRITICAL because economic feature)
+7. Action agent (rules) → RETRAIN_URGENT
+8. Supervisor pauses, sends HIL request to dashboard
+9. Human clicks APPROVE (within 10 minutes)
+10. Supervisor validates (no new drift, not expired) → dispatches to Redis queue
+11. Worker picks up task, retrains model with recent data
+12. New model v3 saved to MLflow
+13. Promotion gate checks (AUC>0.80, Recall>=0.75, etc.) → passes
+14. v3 promoted to production
+15. Dashboard updates: "Production model: v3 (AUC 0.85)"
+
+## All Decisions Complete
+
+All 57 decisions across both Platform and Agent are now finalized. The document is complete and ready for implementation. No decisions remain pending.
+
+## Why This is Professional
+
+We didn't just build a system. We made deliberate, defensible decisions:
+- Webhooks for speed, with retry handling
+- Decision tree for triage (free, fast, testable)
+- Rules-first for action (90% coverage, LLM for edge cases)
+- 10-minute approval expiry (balances safety and practicality)
+- Idempotency keys with 24h TTL (prevents duplicates without infinite storage)
+- MockLLM with keyword dictionary (not too simple, not over-engineered)
+- Mermaid for diagrams (version-controlled, no external files)
+- Async everywhere (no blocking I/O)
+- Pydantic at every boundary (validation once, trust types inside)
+
+**This is not a Colab notebook. This is a production-grade system that comes up with `docker-compose up` and survives crashes.**
+
+---
+
+# 22. IMPLEMENTATION READINESS — REMAINING GAPS RESOLVED
+
+---
+
+## Decision #58: Bootstrap / Initial Training Flow (COMPLETE — NEW)
+
+**The problem:** On a fresh `docker-compose up` the model does not exist yet. The platform cannot serve predictions, the drift calculator has no reference distribution, and MLflow is empty. Something must train and register the model before the system is usable.
+
+**Our Decision:** ✅ **A dedicated `trainer` Docker service that runs once and exits.**
+
+- `trainer` is a separate Docker service with `restart: "no"` so it runs exactly once per `docker-compose up`
+- It trains the LightGBM pipeline, tunes the threshold, registers `v1` in MLflow with the artifact triple, computes and stores reference distributions in Postgres, then exits with code 0
+- All other services that need the model (`platform`, `agent`, `worker`) have `depends_on: trainer: condition: service_completed_successfully`
+- On subsequent restarts (crash recovery), `trainer` does NOT re-run because `restart: "no"` — the model already exists in MLflow
+- If MLflow already has a registered Production model on startup, `trainer` skips retraining (idempotent check: `if mlflow_client.get_latest_versions("bank-classifier", stages=["Production"]): sys.exit(0)`)
+
+**Why not a startup event inside FastAPI?** The platform would have to block on training (minutes) before accepting requests. A separate service keeps concerns separated and the health check chain clean.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #59: Reference Distribution Storage (COMPLETE — NEW)
+
+**The problem:** The drift calculator needs the training-time distribution for each feature (bin edges + counts for PSI; category frequencies for chi²; probability histogram for output drift). These must persist across restarts.
+
+**Our Decision:** ✅ **Postgres table `drift_reference`, populated once by the `trainer` service at bootstrap.**
+
+**Table schema (conceptual — not code):**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| feature_name | VARCHAR | e.g. "euribor3m", "job", "__output__" |
+| feature_type | VARCHAR | "numerical", "categorical", "output" |
+| reference_data | JSONB | bin edges + counts (numerical), category → count map (categorical) |
+| computed_at | TIMESTAMPTZ | when the trainer ran |
+| model_version | VARCHAR | which model version this reference belongs to |
+
+- The platform drift calculator loads this table at startup and caches it in memory
+- When a new model is retrained and promoted, the worker updates `drift_reference` with the new model's training distribution
+- MLflow model version links to the reference row via `model_version` column — they stay in sync
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #60: Complete API Endpoint Inventory (COMPLETE — NEW)
+
+Neither teammate should invent endpoints independently. This is the full contract.
+
+### Platform Service (port 8001)
+
+| Method | Path | Who calls it | Purpose |
+|--------|------|-------------|---------|
+| POST | `/predict` | External / demo script | Serve prediction, log to `predictions_log` |
+| POST | `/promote` | Agent (after HIL) | Promote model version to Production |
+| GET | `/drift/report` | Agent (on startup) / Dashboard | Latest drift report with severities |
+| GET | `/models` | Dashboard | List all MLflow registry versions + aliases |
+| GET | `/health` | Docker healthcheck | Returns 200 if platform is ready |
+
+### Agent Service (port 8002)
+
+| Method | Path | Who calls it | Purpose |
+|--------|------|-------------|---------|
+| POST | `/webhook` | Platform | Receive drift alert, start investigation |
+| GET | `/investigations` | Dashboard | List all investigations (open + closed) |
+| GET | `/investigations/{id}` | Dashboard | Single investigation detail + trajectory |
+| POST | `/investigations/{id}/approve` | Dashboard (human click) | Approve pending HIL request |
+| POST | `/investigations/{id}/reject` | Dashboard (human click) | Reject pending HIL request |
+| GET | `/queue/status` | Dashboard | Queue depth + DLQ count |
+| GET | `/health` | Docker healthcheck | Returns 200 if agent is ready |
+
+**Rule:** No endpoint exists outside this table without updating this document first. Schema changes to `/webhook` or `/promote` are breaking changes (schema_version must increment).
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #61: Worker Service Design (COMPLETE — NEW)
+
+**Our Decision:** ✅ **Custom async polling loop — no Celery, no arq.**
+
+**Why:** Celery adds broker configuration complexity and arq enforces a specific task format. A custom loop is ~60 lines, fully transparent, and both teammates can explain every line on Friday (project rule: no vibe coding).
+
+**How it works:**
+- The worker runs a `while True` async loop
+- Uses Redis `BLPOP` with a 5-second timeout on the main queue key — blocks until a task arrives or timeout
+- On receiving a task: deserializes JSON, checks idempotency key, executes the appropriate handler (retrain / replay / rollback)
+- On success: updates task row in Postgres to `COMPLETED`, releases idempotency key
+- On failure: increments retry count, re-queues with exponential backoff delay using Redis `ZADD` on a delayed queue; after 5 failures moves to DLQ list
+- Worker polls the delayed queue every second and moves ready tasks back to the main queue
+
+**Delayed queue pattern:** Redis sorted set where the score is the Unix timestamp when the task becomes eligible. Worker checks `ZRANGEBYSCORE delayed_queue 0 {now}` and moves matching tasks to main queue.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #62: Database Schema Ownership & Initialization (COMPLETE — NEW)
+
+**Our Decision:** ✅ **SQLAlchemy `create_all` on service startup — no Alembic migrations.**
+
+**Why no Alembic:** Alembic is the right choice for long-lived production systems. For a one-week project with a single known schema, `create_all` is faster to write, easier to understand, and carries zero migration state to manage.
+
+**Who owns which tables:**
+
+| Table | Owner service | Created by |
+|-------|--------------|-----------|
+| `predictions_log` | Platform | Platform startup |
+| `drift_reference` | Platform | Platform startup (populated by trainer) |
+| `investigations` | Agent | Agent startup |
+| `hil_approvals` | Agent | Agent startup |
+| `queue_tasks` | Worker | Worker startup |
+| `checkpoints` (LangGraph) | Agent | LangGraph PostgresSaver auto-creates |
+| `audit_log` | Platform | Platform startup |
+
+**Rule:** Each service creates its own tables with `IF NOT EXISTS`. No service reads or writes another service's tables directly — they communicate via HTTP API only. The one exception is the Dashboard, which may query Postgres directly for read-only display (Decision #38).
+
+**LangGraph note:** `PostgresSaver` from `langgraph.checkpoint.postgres` auto-creates its checkpoint tables. Pass the async connection string and call `await checkpointer.setup()` in the agent lifespan.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #63: Startup Sequence & Health Checks (COMPLETE — NEW)
+
+**Our Decision:** ✅ **Strict dependency chain with Docker Compose `depends_on` + `healthcheck`**
+
+**Startup order (must be respected):**
+
+```
+postgres ──► redis ──► mlflow ──► trainer ──► platform ──► agent ──► worker ──► dashboard
+                                                                               (parallel)
+```
+
+| Service | Healthcheck command | Ready when |
+|---------|---------------------|------------|
+| postgres | `pg_isready -U $POSTGRES_USER` | pg_isready returns 0 |
+| redis | `redis-cli ping` | returns PONG |
+| mlflow | `curl -f http://localhost:5000/health` | HTTP 200 |
+| trainer | N/A — exits with code 0 | `service_completed_successfully` |
+| platform | `curl -f http://localhost:8001/health` | HTTP 200 |
+| agent | `curl -f http://localhost:8002/health` | HTTP 200 |
+| worker | N/A — long-running, no healthcheck needed | starts after redis + postgres healthy |
+| dashboard | N/A — UI, no healthcheck needed | starts after platform + agent healthy |
+
+**Key depends_on relationships:**
+- `mlflow` depends on `postgres` (healthy)
+- `trainer` depends on `mlflow` (healthy)
+- `platform` depends on `trainer` (completed) + `mlflow` (healthy)
+- `agent` depends on `platform` (healthy) + `postgres` (healthy) + `redis` (healthy)
+- `worker` depends on `redis` (healthy) + `postgres` (healthy)
+- `dashboard` depends on `platform` (healthy) + `agent` (healthy)
+
+**Why trainer must complete before platform:** The platform loads the Production model from MLflow at startup. If MLflow is empty, the platform crashes.
+
+| Status | ✅ COMPLETE |
+
+---
+
+## Decision #64: Demo Simulation Plan (COMPLETE — NEW)
+
+**Our Decision:** ✅ **A `scripts/demo_drift.py` script with two modes: `--reset` and `--inject`**
+
+**Friday demo flow (concrete, rehearsable):**
+
+**Step 1 — Establish baseline (before demo starts)**
+Run `python scripts/demo_drift.py --reset`
+- Sends 500 normal predictions using real test-set rows
+- Fills the rolling window with clean data, PSI ≈ 0 across all features
+- Dashboard shows: "No drift detected"
+
+**Step 2 — Inject numeric drift (live, in front of audience)**
+Run `python scripts/demo_drift.py --inject --feature euribor3m --mode high`
+- Sends 60 predictions (> recalc threshold of 50) with `euribor3m` values shifted to the 4.0–5.0 range (vs training mean ~3.6)
+- After 50 predictions, drift calculator recalculates
+- PSI on `euribor3m` crosses 0.2 → severity = HIGH → escalated to CRITICAL (economic feature)
+- Platform fires webhook to agent
+- Agent opens Investigation #001, triage → CRITICAL, action → RETRAIN_URGENT
+- Dashboard shows: HIL inbox with approval request
+
+**Step 3 — Inject categorical drift (while HIL is pending)**
+Run `python scripts/demo_drift.py --inject --feature job --mode retired`
+- Shifts job distribution toward "retired" and "student" (away from "admin"/"technician")
+- chi² p-value drops below 0.01 → HIGH drift on `job`
+- Agent opens Investigation #002 in parallel
+- Dashboard shows: second pending investigation alongside the first
+
+**Step 4 — HIL approval (human interaction)**
+- Presenter clicks APPROVE in dashboard for Investigation #001
+- Agent validates: not stale, no conflicting newer drift → dispatches RETRAIN_URGENT to Redis queue
+- Dashboard shows: queue depth 1, investigation status "DISPATCHED"
+
+**Step 5 — Queue processing**
+- Worker picks up retrain task
+- (For demo speed: worker can use a pre-cached "fast retrain" mode that skips full training and registers a pre-trained v2 model)
+- Dashboard shows: "New model v2 in Staging"
+
+**Step 6 — Show CI failure (brief required)**
+- Checkout an intentionally broken branch where triage maps PSI=0.35 → MEDIUM instead of CRITICAL
+- Show GitHub Actions CI run failing on the snapshot trajectory fixture
+- Revert and show it passing
+
+**Demo safety net:** If any service crashes during the demo, the agent resumes from its Postgres checkpoint automatically. Rehearse the crash-recovery scenario: kill the agent container mid-investigation, restart it, show it picks up exactly where it left off.
+
+| Status | ✅ COMPLETE |
+
+---
+
+**This completes the master document of the Drift Triage Co-Pilot project with all decisions made in this chat.**
+
+**Legend:**
+- ✅ COMPLETE = All 64 decisions are fully decided (Platform #1-8 + #55-57, Agent/Queue/HIL/Dashboard/CI/Docker #9-54, Implementation Readiness #58-64)

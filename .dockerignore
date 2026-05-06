@@ -1,0 +1,70 @@
+# Version control
+.git
+.gitignore
+.gitlab-ci.yml
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Python cache
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info
+.Python
+
+# Virtual environments
+.venv
+venv
+env
+.python-version
+
+# Tests and docs — not needed in image
+tests/
+docs/
+!docs/ARCH.md
+!docs/DECISIONS.md
+
+# ML research layer — not Docker
+ml/
+!ml/.gitkeep
+
+# Dataset — mounted via volume or downloaded in container
+data/
+
+# Dev tooling
+.pre-commit-config.yaml
+.mypy_cache
+.pytest_cache
+htmlcov
+coverage.xml
+.tox
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Scripts (not needed in Docker)
+scripts/
+!scripts/.gitkeep
+
+# Documentation (except required READMEs)
+*.md
+!README.md
+
+# Docker files
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Logs
+*.log

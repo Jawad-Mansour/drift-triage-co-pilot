@@ -1,0 +1,95 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# uv
+uv.lock
+.python-version
+
+# Dataset — too large for git, download separately
+data/raw/
+data/processed/
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# ML model artifacts — MLflow is source of truth
+ml/models/
+*.pkl
+*.joblib
+!ml/models/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+
+# mypy cache
+.mypy_cache/
+.mypy.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Docker volumes (if mounted locally)
+postgres_data/
+redis_data/
+mlflow_artifacts/
+
+# Logs
+*.log
+logs/
+logfiles/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Environment specific
+.env.production
+.env.staging
+
+# MLflow local runs
+mlruns/

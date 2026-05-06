@@ -1,0 +1,71 @@
+name: CI Tests
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: drift
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: drift_triage
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      
+      - name: Install dependencies
+        run: uv sync --extra dev
+      
+      - name: Run linters
+        run: |
+          uv run ruff check .
+          uv run mypy backend/ --ignore-missing-imports
+      
+      - name: Run agent tests (with mocked LLM)
+        run: uv run pytest tests/test_agent/ -v
+        env:
+          OPENAI_API_KEY: "mock_key"
+          GROQ_API_KEY: "mock_key"
+          POSTGRES_PASSWORD: testpass
+          REDIS_PASSWORD: testpass
+      
+      - name: Run fidelity test
+        run: uv run pytest tests/test_fidelity.py -v
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml

@@ -1,0 +1,10 @@
+title = "drift-triage-co-pilot"
+
+[allowlist]
+  description = "Ignore documentation and example files — no real secrets here"
+  files = [
+    '''brainstorm\.txt''',
+    '''docs/.*\.md''',
+    '''\.env\.example''',
+    '''tests/.*\.json''',
+  ]
