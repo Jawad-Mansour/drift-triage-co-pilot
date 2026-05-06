@@ -21,12 +21,12 @@ All 64 decisions are complete. Source of truth: `deepseek-brainstorm.txt`.
 | 11 | Webhook payload | JSON with `schema_version` field | ✅ |
 | 12 | HTTP status codes | Standard REST (200, 202, 400, 404, 409, 422, 500) | ✅ |
 | 13 | Triage agent | Decision tree — NO LLM | ✅ |
-| 14 | Severity rules | PSI thresholds + economic feature escalation | ✅ |
+| 14 | Severity rules | worst(PSI band, chi² band) + economic feature escalation | ✅ |
 | 15 | Action agent | Rules for 90% of cases, LLM for edge cases | ✅ |
 | 16 | Available actions | 7 actions (RETRAIN, RETRAIN_URGENT, ROLLBACK, REPLAY, MONITOR, ESCALATE, SWITCH_FALLBACK) | ✅ |
 | 17 | Action trigger logic | Priority-based rules (7 ordered rules) | ✅ |
 | 18 | Comms agent | Pure LLM — always required | ✅ |
-| 19 | Prompts storage | Separate `.txt` files in `agent/prompts/` | ✅ |
+| 19 | Prompts storage | Python constants in `agents/prompts/action.py` + `comms.py` | ✅ |
 | 20 | Checkpoint content | Complete investigation state | ✅ |
 | 21 | Checkpoint frequency | 7 milestones + before every risky operation | ✅ |
 | 22 | Missing model URI | Ask human via HIL — no automatic fallback | ✅ |
@@ -84,7 +84,7 @@ All 64 decisions are complete. Source of truth: `deepseek-brainstorm.txt`.
 | Chi² p-value (categorical) | > 0.05 | 0.01 – 0.05 | ≤ 0.01 | — |
 | Output PSI (predict_proba) | < 0.1 | 0.1 – 0.2 | 0.2 – 0.25 | ≥ 0.25 |
 
-**Economic feature escalation:** `euribor3m` or `cons.price.idx` at HIGH automatically escalates to CRITICAL.
+**Final severity** = worst of (PSI band, chi² band). Then economic escalation: `euribor3m` or `cons.price.idx` with PSI > 0.15 escalates +1 level.
 
 ### Agent Topology (Decisions 13–18)
 
@@ -114,7 +114,7 @@ TTL = 24h for RETRAIN tasks
 TTL = 1h for all other tasks
 ```
 
-If key exists in Redis → skip. Same drift in same hour = same key = one task only.
+If key exists in Postgres `idempotency_keys` table → skip. Same drift in same hour = same key = one task only.
 
 ### The 5 "Think About" Problems — Solved
 

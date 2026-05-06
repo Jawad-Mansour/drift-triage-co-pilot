@@ -19,6 +19,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     # Agent — LangGraph + LLM clients
     "langgraph>=0.1.0",
+    "langgraph-checkpoint-postgres>=1.0.0",
     "langchain-openai>=0.1.0",
     "langchain-groq>=0.1.0",
     # Platform / Trainer / Worker — ML stack

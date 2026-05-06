@@ -374,12 +374,12 @@ Timeline: How everything works together
 │ STEP 6: Supervisor calls TRIAGE agent.                                             │
 │                                                                                     │
 │ Triage agent (DECISION TREE - NO LLM):                                              │
-│ if psi > 0.25: return "CRITICAL"                                                    │
-│ if psi > 0.2: return "HIGH"                                                         │
-│ if psi > 0.1: return "MEDIUM"                                                       │
-│ if feature in ECONOMIC_FEATURES: bump severity +1                                   │
+│ psi_band  = threshold(psi_score)    # LOW/MED/HIGH/CRIT                             │
+│ chi2_band = threshold(chi2_pvalue)  # LOW/MED/HIGH — categorical features only      │
+│ severity  = max(psi_band, chi2_band)  # worst signal wins                           │
+│ if feature in ECONOMIC_FEATURES and psi > 0.15: severity = escalate(severity) +1   │
 │                                                                                     │
-│ Returns: {"severity": "CRITICAL", "reason": "Economic feature with PSI>0.2"}       │
+│ Returns: {"severity": "CRITICAL", "reason": "Economic feature + worst signal"}      │
 └─────────────────────────────────────────────────────────────────────────────────────┘
          │
          ▼
@@ -1383,12 +1383,13 @@ def send_webhook(agent_url, payload):
 
 **Implementation:**
 ```python
-def triage(psi, feature):
-    if psi > 0.25: return "CRITICAL"
-    if psi > 0.2: return "HIGH"
-    if psi > 0.1: return "MEDIUM"
-    if feature in ECONOMIC_FEATURES and psi > 0.15: return "HIGH"  # escalation
-    return "LOW"
+def triage(psi, chi2_pvalue, feature):
+    psi_band  = psi_threshold(psi)          # LOW/MED/HIGH/CRIT
+    chi2_band = chi2_threshold(chi2_pvalue) # LOW/MED/HIGH or None
+    severity  = max(psi_band, chi2_band) if chi2_band else psi_band  # worst signal
+    if feature in ECONOMIC_FEATURES and psi > 0.15:
+        severity = escalate(severity)       # +1 level
+    return severity
 ```
 
 | Status | ✅ COMPLETE |
@@ -1399,11 +1400,15 @@ def triage(psi, feature):
 
 | Condition | Severity |
 |-----------|----------|
-| PSI > 0.25 | CRITICAL |
-| PSI > 0.2 | HIGH |
-| PSI > 0.1 | MEDIUM |
-| PSI ≤ 0.1 | LOW |
-| **Plus:** Feature is euribor3m or cons.price.idx and PSI > 0.15 | HIGH (escalation) |
+| PSI ≥ 0.25 | CRIT |
+| 0.2 ≤ PSI < 0.25 | HIGH |
+| 0.1 ≤ PSI < 0.2 | MED |
+| PSI < 0.1 | LOW |
+| chi² p ≤ 0.01 | HIGH |
+| 0.01 < chi² p ≤ 0.05 | MED |
+| chi² p > 0.05 | LOW |
+| **Final severity** = worst of (psi_band, chi2_band) | — |
+| **Plus:** economic feature AND PSI > 0.15 AND severity not already CRIT | escalate +1 |
 
 | Status | ✅ COMPLETE |
 
