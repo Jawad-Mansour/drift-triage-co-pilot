@@ -39,6 +39,7 @@ async def receive_drift(
         chi2_pvalue=payload.chi2_pvalue,
         model_auc=payload.model_auc,
         model_uri_missing=payload.model_uri_missing,
+        model_version=payload.model_version,
         economic_impact=payload.feature_name in settings.economic_feature_list,
         recent_retrain=(
             payload.minutes_since_retrain is not None

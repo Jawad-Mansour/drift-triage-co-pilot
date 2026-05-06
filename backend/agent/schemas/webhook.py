@@ -15,8 +15,10 @@ class DriftWebhookPayload(BaseModel):
     model_auc: float | None = Field(default=None, ge=0.0, le=1.0)
     model_uri: str | None = None
     model_uri_missing: bool = False
+    model_version: str | None = None
     minutes_since_retrain: int | None = Field(default=None, ge=0)
     window_size: int = Field(default=500, ge=1)
+    timestamp: str | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
 

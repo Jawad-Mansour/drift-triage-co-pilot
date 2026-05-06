@@ -13,6 +13,7 @@ class DriftContext(BaseModel):
     chi2_pvalue: float | None = Field(default=None, ge=0.0, le=1.0)
     model_auc: float | None = Field(default=None, ge=0.0, le=1.0)
     model_uri_missing: bool = False
+    model_version: str | None = None
     economic_impact: bool = False
     recent_retrain: bool = False
     minutes_since_retrain: int | None = None

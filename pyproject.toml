@@ -25,6 +25,7 @@ dependencies = [
     # Platform / Trainer / Worker — ML stack
     "mlflow>=2.12.0",
     "lightgbm>=4.3.0",
+    "xgboost>=2.0.0",
     "scikit-learn>=1.4.0",
     "pandas>=2.2.0",
     "numpy>=1.26.0",
