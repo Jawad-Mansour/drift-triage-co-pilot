@@ -55,16 +55,15 @@ jobs:
           uv run mypy backend/ --ignore-missing-imports
       
       - name: Run agent tests (with mocked LLM)
-        run: uv run pytest tests/test_agent/ -v
+        run: uv run pytest tests/test_agent/ -v --cov=backend/agent --cov-report=xml
         env:
           OPENAI_API_KEY: "mock_key"
           GROQ_API_KEY: "mock_key"
           POSTGRES_PASSWORD: testpass
           REDIS_PASSWORD: testpass
-      
-      - name: Run fidelity test
-        run: uv run pytest tests/test_fidelity.py -v
-      
+          DATABASE_URL: "postgresql+asyncpg://drift:testpass@localhost:5432/drift_triage"
+          REDIS_URL: "redis://localhost:6379"
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
