@@ -1,5 +1,10 @@
+import uuid
+
+from langchain_core.runnables import RunnableConfig
+
 from backend.agent.agents.state import AgentState, DriftContext, TriageDecision
 from backend.agent.core.logging import get_logger
+from backend.agent.db.models import DriftInvestigation
 from backend.agent.settings import get_settings
 
 log = get_logger(__name__)
@@ -32,7 +37,7 @@ def _escalate(severity: str) -> str:
     return _SEVERITY_ORDER[min(idx + 1, len(_SEVERITY_ORDER) - 1)]
 
 
-async def triage_node(state: AgentState) -> dict:
+async def triage_node(state: AgentState, config: RunnableConfig) -> dict:
     """Pure decision tree — no LLM (brainstorm Decision #13)."""
     s = get_settings()
     ctx: DriftContext = state["drift_context"]
@@ -71,6 +76,14 @@ async def triage_node(state: AgentState) -> dict:
         economic_escalation=economic_escalation,
         rationale="; ".join(parts),
     )
+
+    sessionmaker = config.get("configurable", {}).get("sessionmaker")
+    if sessionmaker:
+        async with sessionmaker() as session:
+            inv = await session.get(DriftInvestigation, uuid.UUID(state["investigation_id"]))
+            if inv:
+                inv.severity = severity
+                await session.commit()
 
     log.info("triage_complete", feature=ctx.feature_name, severity=severity, psi=ctx.psi_score)
     return {"triage": triage, "next_node": "action"}

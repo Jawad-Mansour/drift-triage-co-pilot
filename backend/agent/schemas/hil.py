@@ -22,5 +22,4 @@ class HILApprovalRead(BaseModel):
 class HILApprovalRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    approved: bool
     note: str | None = Field(default=None, max_length=2000)

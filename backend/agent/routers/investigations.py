@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.agent.core.logging import get_logger
 from backend.agent.db.models import (
@@ -76,7 +77,11 @@ async def get_investigation(
     investigation_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
 ) -> InvestigationDetail:
-    row = await session.get(DriftInvestigation, investigation_id)
+    row = await session.scalar(
+        select(DriftInvestigation)
+        .where(DriftInvestigation.id == investigation_id)
+        .options(selectinload(DriftInvestigation.hil_approvals))
+    )
     if not row:
         raise HTTPException(404, "Investigation not found")
     return _to_detail(row)
@@ -90,7 +95,11 @@ async def _resolve_hil(
     graph,
     sessionmaker,
 ) -> InvestigationDetail:
-    row = await session.get(DriftInvestigation, investigation_id)
+    row = await session.scalar(
+        select(DriftInvestigation)
+        .where(DriftInvestigation.id == investigation_id)
+        .options(selectinload(DriftInvestigation.hil_approvals))
+    )
     if not row:
         raise HTTPException(404, "Investigation not found")
 
@@ -125,8 +134,12 @@ async def _resolve_hil(
     asyncio.create_task(graph.ainvoke(Command(resume=resume), config=config))
 
     log.info("hil_resolved", investigation_id=str(investigation_id), approved=approved)
-    await session.refresh(row)
-    return _to_detail(row)
+    refreshed = await session.scalar(
+        select(DriftInvestigation)
+        .where(DriftInvestigation.id == investigation_id)
+        .options(selectinload(DriftInvestigation.hil_approvals))
+    )
+    return _to_detail(refreshed)
 
 
 @router.post(

@@ -1,7 +1,12 @@
+import uuid
+
+from langchain_core.runnables import RunnableConfig
+
 from backend.agent.agents.llm import invoke_with_fallback
 from backend.agent.agents.prompts.comms import COMMS_PROMPT
 from backend.agent.agents.state import AgentState, TriageDecision
 from backend.agent.core.logging import get_logger
+from backend.agent.db.models import DriftInvestigation, InvestigationStatus
 from backend.agent.settings import get_settings
 
 log = get_logger(__name__)
@@ -17,7 +22,7 @@ def _status_label(state: AgentState) -> str:
     return "executing autonomously"
 
 
-async def comms_node(state: AgentState) -> dict:
+async def comms_node(state: AgentState, config: RunnableConfig) -> dict:
     """Always uses LLM — brainstorm Decision #18."""
     triage: TriageDecision = state["triage"]
     ctx = state["drift_context"]
@@ -47,6 +52,15 @@ async def comms_node(state: AgentState) -> dict:
 
     settings = get_settings()
     message = await invoke_with_fallback(prompt, settings)
+
+    sessionmaker = config.get("configurable", {}).get("sessionmaker")
+    if sessionmaker:
+        async with sessionmaker() as session:
+            inv = await session.get(DriftInvestigation, uuid.UUID(state["investigation_id"]))
+            if inv:
+                inv.comms_message = message
+                inv.status = InvestigationStatus.COMPLETED
+                await session.commit()
 
     log.info("comms_complete", action=action, chars=len(message))
     return {"comms_message": message, "next_node": None}

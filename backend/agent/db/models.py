@@ -2,12 +2,14 @@ import enum
 import uuid
 from datetime import datetime
 
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.agent.db.base import Base
+
+TZ = DateTime(timezone=True)
 
 
 class InvestigationStatus(enum.StrEnum):
@@ -26,8 +28,6 @@ class HILStatus(enum.StrEnum):
 
 
 class DriftInvestigation(Base):
-    """One row per incoming drift webhook event."""
-
     __tablename__ = "drift_investigations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -47,9 +47,9 @@ class DriftInvestigation(Base):
         nullable=False,
         default=InvestigationStatus.PENDING,
     )
-    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
-        nullable=False, server_default=func.now(), onupdate=func.now()
+        TZ, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
     hil_approvals: Mapped[list["HILApproval"]] = relationship(
@@ -70,8 +70,6 @@ class DriftInvestigation(Base):
 
 
 class HILApproval(Base):
-    """Pending or resolved human-in-the-loop request. Expires after approval_timeout_minutes."""
-
     __tablename__ = "hil_approvals"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -89,9 +87,9 @@ class HILApproval(Base):
         default=HILStatus.PENDING,
     )
     reviewer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(nullable=False)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
-    resolved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(TZ, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(TZ, nullable=True)
 
     investigation: Mapped["DriftInvestigation"] = relationship(back_populates="hil_approvals")
 
@@ -102,22 +100,18 @@ class HILApproval(Base):
 
 
 class IdempotencyKey(Base):
-    """Dedup store. Key = hash(action+feature+hour+severity). TTL enforced in app layer."""
-
     __tablename__ = "idempotency_keys"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     action_type: Mapped[str] = mapped_column(String(128), nullable=False)
     feature_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
-    expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(TZ, nullable=False)
 
     __table_args__ = (Index("ix_idempotency_keys_expires_at", "expires_at"),)
 
 
 class ActionLog(Base):
-    """Append-only audit trail of every action the agent executed."""
-
     __tablename__ = "action_log"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -132,7 +126,7 @@ class ActionLog(Base):
     severity: Mapped[str] = mapped_column(String(32), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     worker_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(TZ, nullable=False, server_default=func.now())
 
     investigation: Mapped["DriftInvestigation"] = relationship(back_populates="action_logs")
 

@@ -1,0 +1,230 @@
+REVISED PLAN — LOCAL FIRST, DOCKERIZE LAST
+Fixed decisions:
+
+XGBoost stays — we fix its issues together, don't swap algorithm
+No Docker until the final phase
+Run every service locally with .env pointing to localhost
+PHASE 1 — Mock-Test the Agent (sample webhook, no platform needed)
+Goal: Prove the agent works end-to-end in isolation before touching anything else.
+
+What we run locally:
+
+Postgres (local or Docker infra-only)
+Agent service: uvicorn backend.agent.main:app --port 8002
+What we do:
+
+Fix CI env issue — add AGENT_API_KEY and EMERGENCY_BYPASS_KEY to .env
+Hand-craft a valid DriftWebhookPayload JSON (matching the agent schema exactly)
+POST it to http://localhost:8002/webhook
+Watch graph run: triage → action → HIL pause
+Call POST /investigations/{id}/approve
+Watch comms node fire, graph completes
+Known issues to fix before this works:
+
+A8: CI .env missing AGENT_API_KEY / EMERGENCY_BYPASS_KEY — Settings crashes
+A1: After HIL approve, no Redis dispatch (we accept action_dispatched: False for now — just proves flow)
+A4: severity stays "PENDING" in DB — fix triage DB write
+A3: comms_message not written to DB — fix comms DB write
+Test gate:
+
+
+GET /investigations/{id}
+→ severity = "HIGH" (not "PENDING")
+→ status = "completed"  
+→ comms_message = human-readable sentence
+→ proposed_action = "RETRAIN_SCHEDULED" (or whatever rules dictate)
+GET /approvals
+→ empty (approval resolved)
+
+
+
+PHASE 2 — Agent Complete (Redis dispatch wired)
+Goal: After HIL approval, task actually lands in Redis.
+
+What we add locally:
+
+Redis running locally
+Redis client initialized in agent main.py lifespan
+What we fix:
+
+A1: Add Redis LPUSH queue:tasks in action_node after hil_approved = True
+A2: REPLAY_TEST_SET (no-HIL) also dispatches to Redis
+Q1: Redis client added to app.state in agent lifespan
+Q2: GET /queue/depth endpoint built in routers/queue.py
+Test gate:
+
+
+Approve HIL →
+redis-cli LLEN queue:tasks → 1
+GET /queue/depth → {"main_queue": 1, "dlq": 0}
+
+
+
+PHASE 3 — Worker
+Goal: Worker consumes tasks, does real work (retrain, rollback, replay), writes results back.
+
+What we run locally:
+
+Worker process: python -m backend.worker.main
+Uses same local Postgres + Redis + MLflow
+What we build:
+
+worker/settings.py — Pydantic settings
+worker/main.py — BLPOP loop, retry (1,2,4,8,16s), 5 retries → DLQ
+worker/queue/dlq.py — LPUSH to dlq:tasks, write ActionLog
+worker/tasks/retrain.py — train XGBoost pipeline → gate checks → MLflow Staging → notify agent for 2nd HIL
+worker/tasks/rollback.py — flip MLflow alias → write DB
+worker/tasks/replay_test.py — score test set → write metrics
+Note on 2nd HIL: Worker calls agent POST /investigations/{id}/notify_retrain_complete → agent creates new HILApproval for Production promotion → human approves → agent calls platform /promote
+
+Test gate:
+
+
+Push manual RETRAIN task to Redis →
+Worker logs: retrain_started, retrain_complete →
+MLflow: version 2 in Staging →
+GET /approvals → new pending approval for PROMOTE_TO_PRODUCTION →
+Approve it → platform /promote called → version 2 in Production
+
+Push task, kill Postgres after attempt 2 →
+5 retries → redis-cli LLEN dlq:tasks → 1
+
+
+
+PHASE 4 — Dashboard
+Goal: Visual loop — see investigations, approve/reject from UI.
+
+What we run locally:
+
+streamlit run frontend/dashboard/app.py
+What we build:
+
+frontend/dashboard/app.py — 4 panels:
+Registry: current Production/Staging versions + AUC
+Investigations: list with severity, status, comms_message
+Queue: main + DLQ depth
+HIL Inbox: polls GET /approvals every 2s, Approve/Reject buttons
+Tech choice: Streamlit for now (fastest). We switch to Tailwind only if time allows after everything else is done.
+
+Test gate:
+
+
+Open http://localhost:8501
+Send sample webhook → HIL card appears within 2s
+Click Approve → status changes → investigation moves to running
+Worker completes → 2nd HIL appears → approve → registry panel shows new Production version
+
+
+PHASE 5 — MLflow + Training (fix XGBoost issues)
+Goal: Training script produces a valid model that the whole stack can use.
+
+Run locally:
+
+MLflow: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql://... --default-artifact-root ./mlruns
+What we fix (keeping XGBoost):
+
+T2: set_tracking_uri reads MLFLOW_TRACKING_URI env var
+T3: Threshold loop continue not break
+T4: Replace transition_model_version_stage → set_registered_model_alias
+T5/T6: Seed actual bin edges + counts to Postgres drift_reference table at end of training (not just JSON file)
+T7: Add model binary hash to model card
+Also: store output probability histogram (10 bins) in drift_reference for output drift
+Test gate:
+
+
+python ml/training/train.py
+→ exits 0
+curl http://localhost:5000/api/2.0/mlflow/registered-models/list → BankMarketingXGB present
+psql -c "SELECT COUNT(*) FROM drift_reference;" → rows for each feature
+artifacts/model_card.json → has model_hash field
+
+
+
+PHASE 6 — Platform API (predict + promote working locally)
+Run locally:
+
+uvicorn backend.platform.main:app --port 8001
+What we fix:
+
+P1/P2: Fix main.py imports (predict not prediction, remove duplicate api.py)
+P4/P5: Create backend/platform/db/base.py and db/session.py
+P6: Fix db/model.py import (remove stdlib platform conflict, use Mapped style)
+P8: Fix mlflow.pyfunc — use model.predict(df) and extract probability correctly
+P9: Replace deprecated get_latest_versions(stages=[...]) → alias-based lookup
+P10: Replace global _model mutable state → app.state model cache with reload hook
+P11: Fix Pydantic v2 model_config
+P12: Add prediction counter (Redis INCR) → background drift trigger every 50 predictions
+P13/P14: Fix promotion router — remove hardcoded URI, fix prefix to / so route is /promote, add auth
+P15: Fix promotion schema to match Decision #57
+P16: Replace deprecated MLflow alias API
+P17: Add X-Agent-Key auth to promotion endpoint
+A5/A6/A7: Fix platform_client.py URLs to match actual routes
+Test gate:
+
+
+POST http://localhost:8001/predict (with valid features)
+→ {"prediction":0,"probability":0.08,"model_version":"1"}
+psql -c "SELECT COUNT(*) FROM predictions_log;" → increments
+POST http://localhost:8001/promote (with correct Decision #57 schema + X-Agent-Key)
+→ {"status":"promoted","model_version":"1"}
+
+
+PHASE 7 — Drift Detection (platform → agent webhook working)
+What we fix:
+
+D1: Rewrite baseline reads from Postgres drift_reference (real bin edges/counts)
+D2: Fix output drift to use real reference probability histogram
+D3: Default window to 500
+D4: Fix webhook payload — one call per drifting feature, match DriftWebhookPayload schema
+D5: Fix endpoint URL to http://localhost:8002/webhook (local) / configurable via env
+D6: Add severity-change tracking — store last_severity per feature in drift_events table, only fire on transition
+D7: Use async-compatible DB access or move drift logic to platform's async context
+D9: Already handled in Phase 6 (predict endpoint triggers every 50)
+Test gate:
+
+
+Send 60 predictions with euribor3m shifted to 5.0 →
+After 50th: drift detector fires →
+Agent receives webhook →
+GET /investigations → 1 new investigation
+GET /approvals → 1 pending HIL (if severity = HIGH)
+Full loop: approve → worker retrains → 2nd HIL → approve → new Production model
+PHASE 8 — Tests + CI Green
+What we build:
+
+tests/test_agent/test_triage.py — all PSI/chi² band combos + economic escalation (parametrized, no DB needed)
+tests/test_agent/test_action.py — all 7 rules + idempotency + LLM mock
+tests/test_agent/test_webhook.py — POST /webhook → investigation created (MemorySaver + test DB)
+tests/test_agent/test_hil.py — approve/reject/expiry
+tests/test_platform/test_drift.py — PSI/chi² math, severity thresholds
+Fix CI: add AGENT_API_KEY=test_key + EMERGENCY_BYPASS_KEY=test_bypass to workflow env
+Test gate:
+
+
+uv run pytest -v --cov=backend → green, ≥80% coverage
+Push to GitHub → Actions green
+PHASE 9 — Dockerize Everything (final)
+What we write:
+
+backend/agent/Dockerfile
+backend/platform/Dockerfile
+backend/worker/Dockerfile
+backend/trainer/Dockerfile (+ create backend/trainer/ directory wrapping ml/training/train.py)
+frontend/dashboard/Dockerfile
+Verify:
+
+
+docker-compose up --build
+→ all 8 services healthy
+→ full demo loop works end-to-end via containers
+SUMMARY TABLE
+Phase	What	Blocker Fixes	Local Test
+1	Mock-test agent	A3, A4, A8	Webhook → HIL → approve → comms_message in DB
+2	Agent Redis dispatch	A1, A2, Q1, Q2	Approve → task in Redis
+3	Worker	All worker files	Retrain → Staging → 2nd HIL → Production
+4	Dashboard	New Streamlit app	Full visual loop
+5	MLflow + Training	T2–T7	Model in MLflow, drift_reference seeded
+6	Platform API	P1–P17, A5–A7	Predict logs, promote works
+7	Drift Detection	D1–D9	60 shifted predictions → investigation opened
+8	Tests + CI	CI1, CI2	pytest green ≥80% cov
+9	Dockerize	All Dockerfiles	docker-compose up → full stack

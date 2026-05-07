@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, Response
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from backend.agent.agents.checkpointer import build_checkpointer
+from backend.agent.agents.checkpointer import checkpointer_lifespan
 from backend.agent.agents.graph import build_graph
 from backend.agent.core.errors import install_exception_handlers
 from backend.agent.core.logging import configure_logging, get_logger, thread_id_ctx
@@ -41,20 +41,19 @@ def create_app(
 
         # Checkpointer
         if checkpointer is None:
-            app.state.checkpointer = await build_checkpointer(settings)
+            async with checkpointer_lifespan(settings) as saver:
+                app.state.checkpointer = saver
+                app.state.graph = build_graph(checkpointer=saver)
+                log.info("agent_ready", env=settings.app_env)
+                yield
         else:
             app.state.checkpointer = checkpointer
-
-        app.state.graph = build_graph(checkpointer=app.state.checkpointer)
-        log.info("agent_ready", env=settings.app_env)
-
-        yield
+            app.state.graph = build_graph(checkpointer=checkpointer)
+            log.info("agent_ready", env=settings.app_env)
+            yield
 
         if engine is not None:
             await engine.dispose()
-        saver = app.state.checkpointer
-        if callable(getattr(saver, "aclose", None)):
-            await saver.aclose()
 
     app = FastAPI(title="drift-triage-agent", version="0.1.0", lifespan=lifespan)
 

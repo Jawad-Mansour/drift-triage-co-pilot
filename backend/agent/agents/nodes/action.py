@@ -97,11 +97,27 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
     else:
         action, rationale = result
 
-    # Idempotency check
     ikey = _build_ikey(action, ctx.feature_name, triage.severity)
     sessionmaker = config.get("configurable", {}).get("sessionmaker")
 
+    # LangGraph re-executes the entire node on resume (interrupt() reruns from top).
+    # Detect resume by querying for an APPROVED HIL — that record is committed to DB
+    # by _resolve_hil before the graph task is created, so it's always present on resume.
+    is_resume = False
+    hil_approval_id: str | None = None
     if sessionmaker:
+        async with sessionmaker() as session:
+            approved_hil = await session.scalar(
+                select(HILApproval).where(
+                    HILApproval.investigation_id == uuid.UUID(state["investigation_id"]),
+                    HILApproval.status == HILStatus.APPROVED,
+                )
+            )
+            if approved_hil is not None:
+                is_resume = True
+                hil_approval_id = str(approved_hil.id)
+
+    if sessionmaker and not is_resume:
         async with sessionmaker() as session:
             ttl = s.idempotency_ttl_retrain if "RETRAIN" in action else s.idempotency_ttl_other
             existing = await session.scalar(
@@ -132,13 +148,11 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
             await session.commit()
 
     requires_hil = action in _REQUIRES_HIL
-    hil_approval_id: str | None = None
     hil_approved: bool | None = None
     hil_note: str | None = None
 
     if requires_hil:
-        # Write HILApproval row and update investigation status to AWAITING_HIL
-        if sessionmaker:
+        if sessionmaker and not is_resume:
             async with sessionmaker() as session:
                 expires = datetime.now(UTC) + timedelta(minutes=s.approval_timeout_minutes)
                 hil = HILApproval(
@@ -152,6 +166,7 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
                 session.add(hil)
                 inv = await session.get(DriftInvestigation, uuid.UUID(state["investigation_id"]))
                 if inv:
+                    inv.proposed_action = action
                     inv.status = InvestigationStatus.AWAITING_HIL
                 await session.commit()
                 await session.refresh(hil)
@@ -165,6 +180,13 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
         resume = interrupt({"action": action, "rationale": rationale})
         hil_approved = resume.get("hil_approved")
         hil_note = resume.get("hil_note", "")
+
+    if sessionmaker and not requires_hil and not is_resume:
+        async with sessionmaker() as session:
+            inv = await session.get(DriftInvestigation, uuid.UUID(state["investigation_id"]))
+            if inv:
+                inv.proposed_action = action
+                await session.commit()
 
     log.info(
         "action_decided",

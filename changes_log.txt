@@ -1,0 +1,200 @@
+DRIFT TRIAGE CO-PILOT — CHANGES & FIXES LOG
+===========================================
+Base plan: phases.txt
+Format: [FILE] description of change | reason
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 1 — Mock-Test the Agent (A3, A4, A8)
+Status: COMPLETE ✅
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[backend/agent/settings.py]
+  CHANGE: extra="forbid" → extra="ignore" in Settings model_config
+  REASON: A8 — .env is shared with platform/MLflow; Settings crashed with
+          "6 extra inputs not permitted" for keys it didn't own.
+
+[backend/agent/agents/checkpointer.py]
+  CHANGE: Rewrote from bare async function (await AsyncPostgresSaver.from_conn_string())
+          to @asynccontextmanager yielding inside `async with AsyncPostgresSaver...`
+  REASON: langgraph-checkpoint-postgres newer API uses async context manager pattern;
+          calling `await` on it returned a GeneratorContextManager, not a saver,
+          causing: TypeError: _AsyncGeneratorContextManager can't be used in 'await'
+
+[backend/agent/main.py]
+  CHANGE: Import updated: `build_checkpointer` → `checkpointer_lifespan`
+  CHANGE: Lifespan restructured to `async with checkpointer_lifespan(settings) as saver:`
+          with yield nested inside the context manager block
+  REASON: Required by the checkpointer.py rewrite above; yield must stay inside the
+          async context manager or the Postgres connection closes before the app shuts down.
+
+[backend/agent/core/logging.py]
+  CHANGE: Removed `structlog.stdlib.add_logger_name` from processors list
+  REASON: PrintLogger (structlog's default in non-stdlib mode) has no `.name` attribute;
+          this caused AttributeError: 'PrintLogger' has no attribute 'name' on startup.
+
+[backend/agent/db/models.py]
+  CHANGE: Full rewrite of all DateTime column definitions — introduced
+          TZ = DateTime(timezone=True) shorthand; applied to every Mapped[datetime] column
+  REASON: Mixed timezone-naive/aware datetimes caused:
+          DBAPIError: can't subtract offset-naive and offset-aware datetimes
+          Also fixed a secondary bug: ArgumentError: May not pass type_ positionally
+          and as a keyword (duplicate type spec in original column definitions).
+  NOTE: Required DROP + recreate of all agent tables because SQLAlchemy can't
+        ALTER existing columns from timezone-naive to timezone-aware in-place.
+
+[backend/agent/agents/nodes/triage.py]
+  CHANGE: Added `config: RunnableConfig` parameter to triage_node signature
+  CHANGE: Added DB write after triage computation — loads DriftInvestigation by
+          investigation_id from state, sets inv.severity = severity, commits
+  CHANGE: Added imports: uuid, RunnableConfig, DriftInvestigation
+  REASON: A4 — severity was stuck as "PENDING" in the DB; node computed it correctly
+          but never persisted it.
+
+[backend/agent/agents/nodes/comms.py]
+  CHANGE: Added `config: RunnableConfig` parameter to comms_node signature
+  CHANGE: Added DB write after LLM generates message — sets inv.comms_message = message
+          and inv.status = InvestigationStatus.COMPLETED, then commits
+  CHANGE: Added imports: uuid, RunnableConfig, DriftInvestigation, InvestigationStatus
+  REASON: A3 — comms_message was never written to DB; status never reached "completed".
+
+[backend/agent/schemas/hil.py]
+  CHANGE: Removed `approved: bool` field from HILApprovalRequest
+  REASON: Field was redundant — /approve and /reject are separate endpoints that
+          already encode the decision in the URL. The field caused a 422 on every
+          approve call because callers naturally omit it.
+
+[backend/agent/routers/investigations.py]
+  CHANGE: Added `from sqlalchemy.orm import selectinload`
+  CHANGE: Replaced `session.get(DriftInvestigation, ...)` with
+          `session.scalar(select(...).options(selectinload(hil_approvals)))` in
+          get_investigation, _resolve_hil (entry), and _resolve_hil (return)
+  REASON: SQLAlchemy async forbids lazy-loading relationships; accessing
+          row.hil_approvals after a bare session.get() raised MissingGreenlet 500.
+
+[backend/agent/agents/nodes/action.py]
+  CHANGE: Added DB query for APPROVED HIL at start of action_node to detect resume:
+          `is_resume = approved_hil is not None` where approved_hil is fetched via
+          select(HILApproval).where(investigation_id=..., status=APPROVED)
+  CHANGE: Idempotency check + write skipped when is_resume=True
+  CHANGE: HIL record creation + AWAITING_HIL status write skipped when is_resume=True
+  CHANGE: hil_approval_id read from the approved_hil DB row on resume
+  REASON: LangGraph re-executes the entire node on resume (interrupt() reruns from
+          top). hil_approval_id is a local variable never returned to state on first
+          execution (interrupt raises before return), so state.get("hil_approval_id")
+          is always None on resume — the only reliable signal is the APPROVED HIL
+          record committed to DB by _resolve_hil before the resume task is created.
+
+  CHANGE: inv.proposed_action = action written to DB in the HIL path (inside the
+          existing session block) and in the non-HIL path (new session block)
+  REASON: proposed_action was computed and stored in LangGraph state but never
+          persisted to the drift_investigations row — GET /investigations always
+          returned proposed_action=null.
+
+[docker-compose.yml]
+  CHANGE: Postgres host port changed from "5432:5432" → "5433:5432"
+  REASON: Local Odoo installation owns port 5432; Docker Postgres couldn't bind,
+          causing connection refused on agent startup.
+
+Phase 1 test gate verified:
+  POST /webhook             → 200, investigation created
+  triage_complete log       → severity=CRIT (PSI=0.35)
+  action_hil_requested log  → action=ROLLBACK, HIL created
+  Graph pauses at interrupt()
+  POST /investigations/{id}/approve → graph resumes
+  GET /investigations/{id}  → severity=CRIT, status=completed, comms_message populated
+  GET /approvals            → empty (approval resolved)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 2 — Agent Redis Dispatch (A1, A2, Q1, Q2)
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Planned fixes:
+  [backend/agent/main.py]
+    Q1: Init Redis client in app lifespan, attach to app.state.redis
+
+  [backend/agent/agents/nodes/action.py]
+    A1: After hil_approved=True, do LPUSH queue:tasks in action_node
+    A2: REPLAY_TEST_SET (no-HIL) also dispatches to Redis
+
+  [backend/agent/routers/queue.py]  (new file)
+    Q2: GET /queue/depth endpoint → {"main_queue": N, "dlq": 0}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 3 — Worker
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Planned new files:
+  backend/worker/settings.py
+  backend/worker/main.py        (BLPOP loop, retry 1/2/4/8/16s, 5 retries → DLQ)
+  backend/worker/queue/dlq.py
+  backend/worker/tasks/retrain.py
+  backend/worker/tasks/rollback.py
+  backend/worker/tasks/replay_test.py
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 4 — Dashboard
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Planned new files:
+  frontend/dashboard/app.py   (Streamlit — 4 panels: registry, investigations,
+                               queue depth, HIL inbox with approve/reject)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 5 — MLflow + Training (T2–T7)
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Planned fixes:
+  [ml/training/train.py]
+    T2: set_tracking_uri reads MLFLOW_TRACKING_URI env var
+    T3: Threshold loop — change break → continue
+    T4: Replace deprecated transition_model_version_stage → set_registered_model_alias
+    T5/T6: Seed actual bin edges + counts to Postgres drift_reference table
+    T7: Add model_hash to model_card.json
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 6 — Platform API (P1–P17, A5–A7)
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Planned fixes: see phases.txt P1–P17 and A5–A7
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 7 — Drift Detection (D1–D9)
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Planned fixes: see phases.txt D1–D9
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 8 — Tests + CI Green
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Done in advance (Phase 1 prep):
+  tests/conftest.py               — mock_settings + no_db_config fixtures
+  tests/test_agent/test_triage.py — 30+ parametrized triage tests (all bands,
+                                     chi² selection, escalation, rationale)
+  tests/test_agent/test_action.py — 40+ parametrized action tests (all 7 rules,
+                                     priority chain, HIL flag, edge cases)
+
+Remaining:
+  tests/test_agent/test_webhook.py
+  tests/test_agent/test_hil.py
+  tests/test_platform/test_drift.py
+  CI: add AGENT_API_KEY=test_key + EMERGENCY_BYPASS_KEY=test_bypass to workflow env
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 9 — Dockerize Everything
+Status: PENDING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Planned new files:
+  backend/agent/Dockerfile
+  backend/platform/Dockerfile
+  backend/worker/Dockerfile
+  backend/trainer/Dockerfile
+  frontend/dashboard/Dockerfile
