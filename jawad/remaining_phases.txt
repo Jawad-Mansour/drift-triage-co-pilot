@@ -1,0 +1,208 @@
+DRIFT TRIAGE CO-PILOT — REMAINING PHASES
+=========================================
+Phases 1-3 (Agent + Queue + Worker): COMPLETE ✅
+Phases 4-9: REMAINING
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SYSTEM MENTAL MODEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  AGENT (brain)    →  QUEUE (storage)  →  WORKER (messenger)  →  PLATFORM (hands)
+  decides severity     Redis FIFO          delivers with retry      executes ML work
+  decides action       persisted           5x exp backoff           trains XGBoost
+  asks user (HIL)      across restarts     DLQ on failure           serves predictions
+                                                                     promotes models
+
+Component         Talks to user?   Role
+─────────────────────────────────────────────────────────────
+Agent             YES (HIL inbox)  Brain — decides, pauses for human approval
+Worker            NO               Messenger — carries tasks from queue to platform
+Platform          NO               Hands — executes ML operations when told to
+Dashboard         YES (via agent)  UI — displays everything, approve/reject buttons
+MLflow            NO               Storage — platform reads/writes models to it
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COMPLETE END-TO-END FLOW (all phases combined)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Platform serves predictions via GET /predict
+2. Platform logs each prediction to DB, computes PSI/chi² every N predictions
+3. If PSI > threshold → Platform fires POST agent:8002/webhook  ← closes automated loop
+4. Agent receives webhook → triage → action → HIL (if needed) → comms
+5. User approves HIL → task pushed to Redis queue
+6. Worker picks up task (BLPOP) → calls Platform:
+     RETRAIN   → POST platform/retrain         → new XGBoost model in MLflow Staging
+     ROLLBACK  → POST platform/registry/promote → swap champion back to previous
+     REPLAY    → POST platform/replay-test       → re-score test set, log AUC
+7. After retrain: Worker calls POST agent/investigations/{id}/notify_retrain_complete
+8. Agent creates PROMOTE_TO_PRODUCTION HIL (2nd human approval)
+9. User approves → Agent calls POST platform/registry/promote
+10. Platform swaps MLflow champion alias → new model is live
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT IS ALREADY CODED (steps 4-9 above = Phases 1-3)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step  Code                                              Tested
+────────────────────────────────────────────────────────────────────
+4     backend/agent/ (full LangGraph graph)             ✅ Test 1-8
+5     backend/agent/routers/investigations.py /approve  ✅ Test 4,5,6
+5     backend/agent/agents/nodes/action.py (queue push) ✅ Test 4,6
+6     backend/worker/tasks/retrain.py                   ✅ Test 9 (mock)
+6     backend/worker/tasks/rollback.py                  ✅ Test 6 (mock)
+6     backend/worker/tasks/replay_test.py               ✅ Test 3 (mock)
+7     backend/worker/tasks/retrain.py notify call       ✅ Test 9 (mock)
+8     backend/agent/routers/investigations.py /notify   ✅ Test 9
+9     backend/agent/routers/investigations.py /approve  ✅ Test 9
+9     backend/platform/routers/promotion.py             ⚠️ exists, not verified
+
+Note: "mock" means worker called the endpoint but platform wasn't running.
+      platform_promote_failed warning was expected and caught — agent side is correct.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REMAINING PHASES — WHAT TO BUILD & WHY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RECOMMENDED ORDER: 5 → 6 → 7 → 4 → 8 → 9
+
+━━━━━━━━━━━━━━━
+PHASE 5 — XGBoost Training
+━━━━━━━━━━━━━━━
+File:    ml/training/train.py  (already exists)
+Role:    Trains the model once on startup. Everything else depends on it.
+         Without a trained model in MLflow, platform cannot serve predictions.
+         Without reference stats in Postgres, drift detection cannot compute PSI.
+
+What exists:  ml/training/train.py with XGBoost training logic
+What to fix:
+  - MLflow alias API: deprecated transition_model_version_stage
+    → replace with set_registered_model_alias("BankMarketingXGB", "champion", version)
+  - Seed reference statistics (bin edges + counts per feature) into
+    Postgres drift_reference table — Phase 7 PSI calculation reads from here
+  - Write model_card.json: AUC, threshold, feature list, model hash, training date
+
+Run: python ml/training/train.py
+     → model registered in MLflow as "champion"
+     → reference stats in Postgres drift_reference table
+
+━━━━━━━━━━━━━━━
+PHASE 6 — Platform API
+━━━━━━━━━━━━━━━
+Files:   backend/platform/  (structure exists: main.py, api.py, all routers)
+Role:    The hands of the system. Executes ML operations when worker commands it.
+         Worker calls these endpoints directly — wrong response shapes = worker failures.
+
+Endpoints the worker calls (must be verified working):
+  POST /retrain          → trigger new XGBoost training run
+                           return: {model_name, model_version}
+                           worker then calls agent /notify_retrain_complete with this
+
+  POST /registry/promote → promote model version to champion alias in MLflow
+                           used by: worker (ROLLBACK) + agent (PROMOTE_TO_PRODUCTION)
+                           body: {model_name, candidate_version, reason, ...}
+
+  POST /replay-test      → score held-out test set with current champion
+                           return: {auc, accuracy, ...}
+                           worker logs these metrics
+
+  GET  /predict          → serve prediction using champion model
+                           logs each prediction to DB for drift detection
+
+Other endpoints:
+  GET  /registry         → list model versions + current champion (dashboard reads this)
+  GET  /health           → health check
+
+━━━━━━━━━━━━━━━
+PHASE 7 — Drift Detection
+━━━━━━━━━━━━━━━
+Files:   backend/platform/routers/drift.py
+         backend/platform/routers/drift_trigger.py  (both exist)
+Role:    Closes the fully automated loop. No manual webhooks needed after this.
+         Watches prediction traffic, computes drift, alerts the agent automatically.
+
+Logic:
+  1. Every POST /predict → log prediction + features to DB
+  2. Every DRIFT_WINDOW_SIZE predictions (default 500): compute PSI + chi² per feature
+     PSI = sum over bins of (actual - reference) / reference  (vs Phase 5 reference stats)
+     chi² = scipy.stats.chi2_contingency on categorical features
+  3. If any feature PSI > DRIFT_PSI_THRESHOLD_HIGH (0.2):
+       POST http://agent:8002/webhook  body: {feature_name, psi_score, chi2_pvalue, model_version}
+  4. Agent handles it from there (already working)
+
+━━━━━━━━━━━━━━━
+PHASE 4 — Streamlit Dashboard
+━━━━━━━━━━━━━━━
+Files:   frontend/dashboard/  (Dockerfile exists, pages/ empty, components/ empty)
+Role:    The only human-facing UI. 4 panels, all read-only except the HIL inbox.
+         Build after Phases 6+7 so the APIs it reads from are stable.
+
+4 panels:
+  Registry Panel   → GET platform:8001/registry
+                     shows: champion model version, AUC, staging versions
+
+  Investigations   → GET agent:8002/investigations
+                     shows: all drift events, severity, status, comms message
+
+  Queue Depth      → GET agent:8002/queue/depth
+                     shows: main queue count + DLQ count (alert if DLQ > 0)
+
+  HIL Inbox        → GET agent:8002/approvals
+                     shows: pending HIL approvals with rationale
+                     [Approve] button → POST agent:8002/investigations/{id}/approve
+                     [Reject]  button → POST agent:8002/investigations/{id}/reject
+                     poll every AGENT_HIL_POLL_INTERVAL seconds (default 2)
+
+━━━━━━━━━━━━━━━
+PHASE 8 — Tests + CI
+━━━━━━━━━━━━━━━
+Files:   tests/  (conftest.py exists, test_triage.py + test_action.py exist)
+Role:    Regression safety net. Ensures agent decision logic never silently breaks.
+         CI must stay green before any merge.
+
+Already written:
+  tests/test_agent/test_triage.py   30+ parametrized tests (all PSI bands, chi², escalation)
+  tests/test_agent/test_action.py   40+ parametrized tests (all 7 rules, HIL flag, priority)
+
+Still needed:
+  tests/test_agent/test_webhook.py  POST /webhook → investigation created, graph fires
+  tests/test_agent/test_hil.py      approve/reject endpoints, expiry window (410 Gone)
+  tests/test_platform/test_drift.py PSI + chi² calculation correctness vs known values
+
+CI (GitHub Actions):
+  Add secrets: AGENT_API_KEY=test_key, EMERGENCY_BYPASS_KEY=test_bypass
+  Add OPENAI_API_KEY mock or skip LLM calls in tests
+  Target: ≥80% coverage on agent + platform
+
+━━━━━━━━━━━━━━━
+PHASE 9 — Trainer Dockerfile
+━━━━━━━━━━━━━━━
+Files:   backend/trainer/  (DOES NOT EXIST — docker-compose references it)
+Role:    Wraps ml/training/train.py so docker-compose up trainer works.
+         Runs once on first boot, exits 0, populates MLflow + Postgres.
+         All other services (platform, agent) depend on trainer completing first.
+
+What to create:
+  backend/trainer/Dockerfile   FROM python:3.11-slim
+                               COPY ml/ ml/
+                               COPY data/ data/
+                               CMD ["python", "ml/training/train.py"]
+
+docker-compose.yml already has trainer service with:
+  depends_on: mlflow (healthy) + postgres (healthy)
+  restart: "no"   ← runs once and exits, that's correct
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILES THAT EXIST BUT NEED VERIFICATION BEFORE USE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+backend/platform/routers/promotion.py    platform promote endpoint — agent calls this on 2nd HIL
+backend/platform/routers/predict.py      prediction serving — must log to DB for drift
+backend/platform/routers/drift.py        PSI/chi² computation — must match brainstorm thresholds
+backend/platform/routers/drift_trigger.py webhook firing to agent — URL + auth must match
+backend/platform/routers/registry.py     model registry list — dashboard reads this
+ml/training/train.py                     XGBoost training — MLflow alias API likely deprecated
