@@ -28,6 +28,63 @@ API key for all requests:  X-Agent-API-Key: agent123  (from .env AGENT_API_KEY)
 Full stack (Docker):
   docker-compose up --build
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO RUN — FULL DOCKER STACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1 — Copy and fill .env
+  cp .env.example .env
+  # Required: OPENAI_API_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD
+  # Defaults are fine for everything else in local dev
+
+Step 2 — Start full stack
+  docker-compose up --build
+
+  Docker starts services in this order (enforced by depends_on):
+    1. postgres      — DB for agent, platform, MLflow
+    2. redis         — queue backend
+    3. mlflow        — experiment + model registry UI (http://localhost:5000)
+    4. trainer       — runs train.py ONCE, registers XGBoost model, exits 0
+    5. platform      — FastAPI serving predictions + drift detection (http://localhost:8001)
+    6. agent         — LangGraph supervisor (http://localhost:8002)
+    7. worker        — Redis BLPOP consumer, no HTTP port
+    8. dashboard     — Streamlit UI (http://localhost:8501)
+
+Step 3 — Verify all services healthy
+  curl http://localhost:8001/health    # platform
+  curl http://localhost:8002/health    # agent
+  open http://localhost:5000           # MLflow UI — check champion model registered
+  open http://localhost:8501           # Dashboard
+
+Step 4 — Verify agent is receiving webhooks
+  # Platform fires these automatically when drift is detected.
+  # To test manually (PowerShell):
+  $h = @{ "X-Agent-API-Key" = "agent123" }
+  $body = '{"schema_version":"1.0","feature_name":"duration","psi_score":0.22,"chi2_pvalue":0.03,"model_version":"champion"}'
+  Invoke-RestMethod -Uri "http://localhost:8002/webhook" -Method POST -Headers $h -ContentType "application/json" -Body $body
+
+Step 5 — Watch the investigation
+  Invoke-RestMethod "http://localhost:8002/investigations" -Headers $h | Select-Object -First 1
+
+Step 6 — Approve/reject HIL if required
+  # Check inbox:
+  Invoke-RestMethod "http://localhost:8002/approvals" -Headers $h
+  # Approve:
+  Invoke-RestMethod -Uri "http://localhost:8002/investigations/{id}/approve" -Method POST -Headers $h -ContentType "application/json" -Body '{"note":"approved"}'
+
+Useful Docker commands:
+  docker-compose logs agent            # agent logs
+  docker-compose logs worker           # worker logs
+  docker-compose logs platform         # platform logs
+  docker-compose logs trainer          # see if training succeeded
+  docker-compose ps                    # check which services are healthy
+  docker exec -it drift-triage-co-pilot-redis-1 redis-cli -a redis123 LLEN queue:tasks    # queue depth
+  docker exec -it drift-triage-co-pilot-redis-1 redis-cli -a redis123 LLEN queue:tasks:dlq  # DLQ depth
+
+Restart a single service after code change:
+  docker-compose up --build agent
+  docker-compose up --build worker
+
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 COMPLETE WORKFLOW — AGENT + QUEUE + WORKER
