@@ -23,3 +23,10 @@ class HILApprovalRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     note: str | None = Field(default=None, max_length=2000)
+
+
+class RetrainCompleteNotification(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    model_name: str = "BankMarketingXGB"
+    model_version: str

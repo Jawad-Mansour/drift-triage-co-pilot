@@ -159,6 +159,8 @@ services:
       POSTGRES_DB: drift_triage
       MLFLOW_TRACKING_URI: http://mlflow:5000
       PLATFORM_URL: http://platform:8001
+      AGENT_URL: http://agent:8002
+      AGENT_API_KEY: ${AGENT_API_KEY}
     depends_on:
       redis:
         condition: service_healthy

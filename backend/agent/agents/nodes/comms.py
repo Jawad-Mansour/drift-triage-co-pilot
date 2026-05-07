@@ -37,6 +37,14 @@ async def comms_node(state: AgentState, config: RunnableConfig) -> dict:
             f"within the dedup window — no new task created."
         )
         log.info("comms_duplicate_skipped", action=action)
+        sessionmaker = config.get("configurable", {}).get("sessionmaker")
+        if sessionmaker:
+            async with sessionmaker() as session:
+                inv = await session.get(DriftInvestigation, uuid.UUID(state["investigation_id"]))
+                if inv:
+                    inv.comms_message = msg
+                    inv.status = InvestigationStatus.COMPLETED
+                    await session.commit()
         return {"comms_message": msg, "next_node": None}
 
     prompt = COMMS_PROMPT.format(

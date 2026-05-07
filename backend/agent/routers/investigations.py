@@ -1,7 +1,8 @@
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Security
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -17,9 +18,10 @@ from backend.agent.db.models import (
     InvestigationStatus,
 )
 from backend.agent.db.session import get_session
-from backend.agent.deps import get_graph, get_sessionmaker, require_api_key
-from backend.agent.schemas.hil import HILApprovalRequest
+from backend.agent.deps import get_graph, get_redis, get_sessionmaker, require_api_key
+from backend.agent.schemas.hil import HILApprovalRequest, RetrainCompleteNotification
 from backend.agent.schemas.investigation import InvestigationDetail, InvestigationSummary
+from backend.agent.settings import get_settings
 
 router = APIRouter(prefix="/investigations", tags=["investigations"])
 log = get_logger(__name__)
@@ -94,6 +96,7 @@ async def _resolve_hil(
     session: AsyncSession,
     graph,
     sessionmaker,
+    redis,
 ) -> InvestigationDetail:
     row = await session.scalar(
         select(DriftInvestigation)
@@ -119,19 +122,42 @@ async def _resolve_hil(
     hil.status = HILStatus.APPROVED if approved else HILStatus.REJECTED
     hil.reviewer_note = body.note
     hil.resolved_at = datetime.now(UTC)
-    row.status = InvestigationStatus.RUNNING
-    await session.commit()
 
-    resume = {
-        "hil_approved": approved,
-        "hil_note": body.note or "",
-        "next_node": "comms",
-        "messages": [
-            HumanMessage(content=f"HIL {'approved' if approved else 'rejected'}: {body.note or ''}")
-        ],
-    }
-    config = {"configurable": {"thread_id": row.thread_id, "sessionmaker": sessionmaker}}
-    asyncio.create_task(graph.ainvoke(Command(resume=resume), config=config))
+    if hil.proposed_action == "PROMOTE_TO_PRODUCTION":
+        # 2nd HIL — call platform promote, then mark completed
+        if approved:
+            pending = row.drift_payload.get("pending_model", {})
+            settings = get_settings()
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    await client.post(
+                        f"{settings.platform_url}/registry/promote",
+                        json={
+                            "model_name": pending.get("model_name", "BankMarketingXGB"),
+                            "candidate_version": pending.get("model_version", ""),
+                            "approved_by": "hil-operator",
+                            "investigation_id": str(investigation_id),
+                            "reason": body.note or "HIL approved production promotion",
+                        },
+                    )
+            except Exception:
+                log.warning("platform_promote_failed investigation_id=%s", str(investigation_id))
+        row.status = InvestigationStatus.COMPLETED
+        await session.commit()
+    else:
+        # Original HIL — resume LangGraph graph
+        row.status = InvestigationStatus.RUNNING
+        await session.commit()
+        resume = {
+            "hil_approved": approved,
+            "hil_note": body.note or "",
+            "next_node": "comms",
+            "messages": [
+                HumanMessage(content=f"HIL {'approved' if approved else 'rejected'}: {body.note or ''}")
+            ],
+        }
+        config = {"configurable": {"thread_id": row.thread_id, "sessionmaker": sessionmaker, "redis": redis}}
+        asyncio.create_task(graph.ainvoke(Command(resume=resume), config=config))
 
     log.info("hil_resolved", investigation_id=str(investigation_id), approved=approved)
     refreshed = await session.scalar(
@@ -153,8 +179,9 @@ async def approve_investigation(
     session: AsyncSession = Depends(get_session),
     graph=Depends(get_graph),
     sessionmaker=Depends(get_sessionmaker),
+    redis=Depends(get_redis),
 ) -> InvestigationDetail:
-    return await _resolve_hil(investigation_id, body, True, session, graph, sessionmaker)
+    return await _resolve_hil(investigation_id, body, True, session, graph, sessionmaker, redis)
 
 
 @router.post(
@@ -168,5 +195,49 @@ async def reject_investigation(
     session: AsyncSession = Depends(get_session),
     graph=Depends(get_graph),
     sessionmaker=Depends(get_sessionmaker),
+    redis=Depends(get_redis),
 ) -> InvestigationDetail:
-    return await _resolve_hil(investigation_id, body, False, session, graph, sessionmaker)
+    return await _resolve_hil(investigation_id, body, False, session, graph, sessionmaker, redis)
+
+
+@router.post(
+    "/{investigation_id}/notify_retrain_complete",
+    dependencies=[Security(require_api_key)],
+)
+async def notify_retrain_complete(
+    investigation_id: uuid.UUID,
+    body: RetrainCompleteNotification,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Worker calls this after retraining completes — creates PROMOTE_TO_PRODUCTION HIL."""
+    row = await session.scalar(
+        select(DriftInvestigation).where(DriftInvestigation.id == investigation_id)
+    )
+    if not row:
+        raise HTTPException(404, "Investigation not found")
+
+    settings = get_settings()
+    expires = datetime.now(UTC) + timedelta(minutes=settings.approval_timeout_minutes)
+    hil = HILApproval(
+        investigation_id=investigation_id,
+        thread_id=row.thread_id,
+        proposed_action="PROMOTE_TO_PRODUCTION",
+        rationale=(
+            f"Retrain complete. {body.model_name} v{body.model_version} is in Staging. "
+            "Approve to promote to Production."
+        ),
+        status=HILStatus.PENDING,
+        expires_at=expires,
+    )
+    session.add(hil)
+
+    # Store model info for the approve handler to use
+    row.drift_payload = {**row.drift_payload, "pending_model": {"model_name": body.model_name, "model_version": body.model_version}}
+    row.status = InvestigationStatus.AWAITING_HIL
+    await session.commit()
+
+    log.info(
+        "retrain_hil_created investigation_id=%s model=%s version=%s",
+        str(investigation_id), body.model_name, body.model_version,
+    )
+    return {"status": "hil_created", "proposed_action": "PROMOTE_TO_PRODUCTION"}

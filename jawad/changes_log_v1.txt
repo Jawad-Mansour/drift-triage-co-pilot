@@ -95,43 +95,141 @@ Status: COMPLETE ✅
   REASON: Local Odoo installation owns port 5432; Docker Postgres couldn't bind,
           causing connection refused on agent startup.
 
-Phase 1 test gate verified:
-  POST /webhook             → 200, investigation created
-  triage_complete log       → severity=CRIT (PSI=0.35)
-  action_hil_requested log  → action=ROLLBACK, HIL created
-  Graph pauses at interrupt()
-  POST /investigations/{id}/approve → graph resumes
-  GET /investigations/{id}  → severity=CRIT, status=completed, comms_message populated
-  GET /approvals            → empty (approval resolved)
+Phase 1 test gate verified (feature=balance, PSI=0.22):
+  POST /webhook                      → 202, investigation created
+  GET /investigations/{id}           → severity=HIGH, status=awaiting_hil,
+                                       proposed_action=RETRAIN_SCHEDULED
+  GET /approvals                     → 1 pending HIL with status=pending
+  POST /investigations/{id}/approve  → graph resumes correctly (no dedup)
+  GET /investigations/{id}           → severity=HIGH, status=completed,
+                                       proposed_action=RETRAIN_SCHEDULED,
+                                       comms_message populated
+  GET /approvals                     → empty (approval resolved)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PHASE 2 — Agent Redis Dispatch (A1, A2, Q1, Q2)
-Status: PENDING
+Status: COMPLETE ✅
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Planned fixes:
-  [backend/agent/main.py]
-    Q1: Init Redis client in app lifespan, attach to app.state.redis
+[backend/agent/main.py]
+  CHANGE: Import redis.asyncio as aioredis
+  CHANGE: Added Redis init in lifespan: aioredis.from_url(settings.redis_url) →
+          app.state.redis; closed with await redis_client.aclose() on shutdown
+  CHANGE: Included queue router
+  REASON: Q1 — app needs a shared async Redis client accessible via request.app.state.redis
 
-  [backend/agent/agents/nodes/action.py]
-    A1: After hil_approved=True, do LPUSH queue:tasks in action_node
-    A2: REPLAY_TEST_SET (no-HIL) also dispatches to Redis
+[backend/agent/deps.py]
+  CHANGE: Added get_redis(request) → request.app.state.redis
+  REASON: FastAPI dependency injection pattern — same as get_sessionmaker
 
-  [backend/agent/routers/queue.py]  (new file)
-    Q2: GET /queue/depth endpoint → {"main_queue": N, "dlq": 0}
+[backend/agent/routers/webhook.py]
+  CHANGE: Added redis=Depends(get_redis) param; added "redis": redis to config
+  REASON: Graph config must carry the redis client so action_node can dispatch
+
+[backend/agent/routers/investigations.py]
+  CHANGE: Added redis param to _resolve_hil; added "redis": redis to resume config
+  CHANGE: Added redis=Depends(get_redis) to approve and reject endpoints
+  REASON: Resume path needs redis in config so action_node dispatches on HIL approval
+
+[backend/agent/agents/nodes/action.py]
+  CHANGE: Added import json
+  CHANGE: Reads redis_client from config["configurable"]["redis"]
+  CHANGE: A1 — after interrupt() returns with hil_approved=True, LPUSH to queue:tasks
+  CHANGE: A2 — REPLAY_TEST_SET (no-HIL) LPUSH to queue:tasks immediately
+  CHANGE: action_dispatched return value now reflects actual dispatch status
+  REASON: Worker needs tasks in Redis; HIL-gated actions only dispatch after approval;
+          REPLAY_TEST_SET is lightweight enough to dispatch without HIL
+
+[backend/agent/routers/queue.py]  (new file)
+  CHANGE: GET /queue/depth → LLEN queue:tasks + LLEN queue:tasks:dlq
+  REASON: Q2 — dashboard and manual testing need visibility into queue depth
+
+Phase 2 test gate verified (feature=duration PSI=0.15 + feature=campaign PSI=0.22):
+  POST /webhook (feature=duration, PSI=0.15) → 202, action=REPLAY_TEST_SET, no HIL
+  GET /queue/depth                           → {"main_queue": 1, "dlq": 0}  (A2 confirmed)
+  POST /webhook (feature=campaign, PSI=0.22) → 202, action=RETRAIN_SCHEDULED, HIL created
+  GET /approvals                             → 1 pending, proposed_action=RETRAIN_SCHEDULED
+  GET /queue/depth                           → {"main_queue": 1, "dlq": 0}  (not dispatched yet)
+  POST /investigations/{id}/approve          → graph resumes, task dispatched
+  GET /queue/depth                           → {"main_queue": 2, "dlq": 0}  (A1 confirmed)
+  GET /investigations/{id}                   → status=completed, proposed_action=RETRAIN_SCHEDULED,
+                                               comms_message populated
+  LRANGE queue:tasks 0 -1                    → 2 entries:
+                                               {"task_type":"RETRAIN_SCHEDULED","feature_name":"campaign",...}
+                                               {"task_type":"REPLAY_TEST_SET","feature_name":"duration",...}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PHASE 3 — Worker
-Status: PENDING
+Status: COMPLETE ✅
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Planned new files:
-  backend/worker/settings.py
-  backend/worker/main.py        (BLPOP loop, retry 1/2/4/8/16s, 5 retries → DLQ)
-  backend/worker/queue/dlq.py
-  backend/worker/tasks/retrain.py
-  backend/worker/tasks/rollback.py
-  backend/worker/tasks/replay_test.py
+[backend/worker/settings.py]  (new)
+  CHANGE: Pydantic WorkerSettings reading from .env (redis, platform_url,
+          agent_url, agent_api_key, max_retries); redis_url property.
+  REASON: Worker needs its own settings — separate from agent's settings.
+
+[backend/worker/main.py]  (new)
+  CHANGE: Async BLPOP loop on queue:tasks (timeout=5s); task dispatched to
+          handler via asyncio.create_task; exponential backoff retry
+          1/2/4/8/16s (5 attempts); exhausted → push_to_dlq.
+  REASON: Core worker loop — consumes tasks dispatched by action_node.
+
+[backend/worker/queue/dlq.py]  (new)
+  CHANGE: push_to_dlq() — opens own Redis connection, LPUSH to
+          queue:tasks:dlq with error + failed_at timestamp, closes client.
+  REASON: Isolates DLQ write logic; worker main stays clean.
+
+[backend/worker/tasks/retrain.py]  (new)
+  CHANGE: handle_retrain() — POST {platform_url}/retrain (step 1);
+          on success POST {agent_url}/investigations/{id}/notify_retrain_complete
+          with model_name + model_version (step 2 — triggers 2nd HIL).
+  REASON: Retrain is the critical path: platform trains new model → agent
+          creates PROMOTE_TO_PRODUCTION HIL for human sign-off.
+
+[backend/worker/tasks/rollback.py]  (new)
+  CHANGE: handle_rollback() — POST {platform_url}/registry/promote with
+          candidate_version=previous + reason. Handles ROLLBACK and
+          SWITCH_TO_FALLBACK task types.
+  REASON: Both actions mean "go back to last known good" — same platform call.
+
+[backend/worker/tasks/replay_test.py]  (new)
+  CHANGE: handle_replay_test() — POST {platform_url}/replay-test with
+          investigation_id + feature_name; logs returned metrics.
+  REASON: REPLAY_TEST_SET re-scores held-out test set to verify drift is real.
+
+[backend/agent/schemas/hil.py]
+  CHANGE: Added RetrainCompleteNotification(model_name, model_version)
+  REASON: Schema for the worker's notify_retrain_complete call to the agent.
+
+[backend/agent/routers/investigations.py]
+  CHANGE: Added imports: timedelta, httpx, RetrainCompleteNotification, get_settings
+  CHANGE: _resolve_hil — added PROMOTE_TO_PRODUCTION branch:
+          if HIL action == PROMOTE_TO_PRODUCTION and approved → call
+          platform /registry/promote using model info stored in drift_payload;
+          platform failure is logged as warning (non-fatal, graph already done);
+          investigation → COMPLETED. Original LangGraph resume path unchanged.
+  CHANGE: Added POST /{id}/notify_retrain_complete endpoint — creates
+          PROMOTE_TO_PRODUCTION HILApproval, stores pending_model in
+          drift_payload JSONB, sets status=AWAITING_HIL.
+  REASON: Closes the 2nd HIL loop: worker completes retrain → notifies agent
+          → human approves → agent calls platform promote → investigation done.
+
+Communication between the 3 sub-agents (worker tasks):
+  Worker → Platform : HTTP POST (retrain / rollback / replay-test)
+  Worker → Agent    : HTTP POST /notify_retrain_complete (retrain only)
+  Agent  → Platform : HTTP POST /registry/promote (on 2nd HIL approval)
+  All calls are fire-and-forget with retry/DLQ in the worker loop.
+
+Phase 3 test gate (requires Phase 5-6 platform to be working):
+  python -m backend.worker.main
+  Push manual RETRAIN_SCHEDULED task to Redis →
+    Worker logs: task_attempt, task_complete
+    Platform: new model version in Staging
+    Agent: GET /approvals → 1 pending PROMOTE_TO_PRODUCTION
+    Approve it → platform /registry/promote called
+    GET /investigations/{id} → status=completed
+  Kill Postgres mid-task →
+    5 retries → docker exec redis LLEN queue:tasks:dlq → 1
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PHASE 4 — Dashboard

@@ -19,6 +19,10 @@ def get_sessionmaker(request: Request):
     return request.app.state.sessionmaker
 
 
+def get_redis(request: Request):
+    return request.app.state.redis
+
+
 async def require_api_key(
     key: str | None = Security(_api_key_header),
 ) -> None:

@@ -8,7 +8,7 @@ from backend.agent.agents.state import AgentState, DriftContext
 from backend.agent.core.logging import get_logger, thread_id_ctx
 from backend.agent.db.models import DriftInvestigation, InvestigationStatus
 from backend.agent.db.session import get_session
-from backend.agent.deps import get_graph, get_sessionmaker, get_settings_dep, require_api_key
+from backend.agent.deps import get_graph, get_redis, get_sessionmaker, get_settings_dep, require_api_key
 from backend.agent.schemas.webhook import DriftWebhookPayload, DriftWebhookResponse
 from backend.agent.settings import Settings
 
@@ -27,6 +27,7 @@ async def receive_drift(
     session: AsyncSession = Depends(get_session),
     graph=Depends(get_graph),
     sessionmaker=Depends(get_sessionmaker),
+    redis=Depends(get_redis),
     settings: Settings = Depends(get_settings_dep),
 ) -> DriftWebhookResponse:
     """Receive drift alert from platform, open investigation, launch graph (202)."""
@@ -70,7 +71,7 @@ async def receive_drift(
         "next_node": "triage",
         "messages": [],
     }
-    config = {"configurable": {"thread_id": thread_id, "sessionmaker": sessionmaker}}
+    config = {"configurable": {"thread_id": thread_id, "sessionmaker": sessionmaker, "redis": redis}}
     asyncio.create_task(graph.ainvoke(initial_state, config=config))
 
     thread_id_ctx.reset(token)

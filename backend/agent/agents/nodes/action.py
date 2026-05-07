@@ -1,4 +1,5 @@
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -99,6 +100,8 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
 
     ikey = _build_ikey(action, ctx.feature_name, triage.severity)
     sessionmaker = config.get("configurable", {}).get("sessionmaker")
+    redis_client = config.get("configurable", {}).get("redis")
+    action_dispatched = False
 
     # LangGraph re-executes the entire node on resume (interrupt() reruns from top).
     # Detect resume by querying for an APPROVED HIL — that record is committed to DB
@@ -107,15 +110,16 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
     hil_approval_id: str | None = None
     if sessionmaker:
         async with sessionmaker() as session:
-            approved_hil = await session.scalar(
+            resolved_hil = await session.scalar(
                 select(HILApproval).where(
                     HILApproval.investigation_id == uuid.UUID(state["investigation_id"]),
-                    HILApproval.status == HILStatus.APPROVED,
+                    HILApproval.status.in_([HILStatus.APPROVED, HILStatus.REJECTED]),
                 )
             )
-            if approved_hil is not None:
+            if resolved_hil is not None:
                 is_resume = True
-                hil_approval_id = str(approved_hil.id)
+                if resolved_hil.status == HILStatus.APPROVED:
+                    hil_approval_id = str(resolved_hil.id)
 
     if sessionmaker and not is_resume:
         async with sessionmaker() as session:
@@ -181,12 +185,36 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
         hil_approved = resume.get("hil_approved")
         hil_note = resume.get("hil_note", "")
 
+        # A1: dispatch to worker queue after operator approves
+        if hil_approved and redis_client:
+            task = json.dumps({
+                "task_type": action,
+                "investigation_id": state["investigation_id"],
+                "feature_name": ctx.feature_name,
+                "thread_id": state["thread_id"],
+            })
+            await redis_client.lpush("queue:tasks", task)
+            action_dispatched = True
+            log.info("task_dispatched", action=action, feature=ctx.feature_name)
+
     if sessionmaker and not requires_hil and not is_resume:
         async with sessionmaker() as session:
             inv = await session.get(DriftInvestigation, uuid.UUID(state["investigation_id"]))
             if inv:
                 inv.proposed_action = action
                 await session.commit()
+
+    # A2: REPLAY_TEST_SET bypasses HIL — dispatch immediately
+    if action == "REPLAY_TEST_SET" and redis_client:
+        task = json.dumps({
+            "task_type": action,
+            "investigation_id": state["investigation_id"],
+            "feature_name": ctx.feature_name,
+            "thread_id": state["thread_id"],
+        })
+        await redis_client.lpush("queue:tasks", task)
+        action_dispatched = True
+        log.info("task_dispatched", action=action, feature=ctx.feature_name)
 
     log.info(
         "action_decided",
@@ -204,6 +232,6 @@ async def action_node(state: AgentState, config: RunnableConfig) -> dict:
         "hil_approval_id": hil_approval_id,
         "hil_approved": hil_approved,
         "hil_note": hil_note,
-        "action_dispatched": False,
+        "action_dispatched": action_dispatched,
         "next_node": "comms",
     }

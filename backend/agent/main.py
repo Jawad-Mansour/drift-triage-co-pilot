@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
+import redis.asyncio as aioredis
 from fastapi import FastAPI, Request, Response
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -12,7 +13,7 @@ from backend.agent.agents.graph import build_graph
 from backend.agent.core.errors import install_exception_handlers
 from backend.agent.core.logging import configure_logging, get_logger, thread_id_ctx
 from backend.agent.db.base import Base, build_engine, build_sessionmaker
-from backend.agent.routers import approvals, investigations, webhook
+from backend.agent.routers import approvals, investigations, queue, webhook
 from backend.agent.schemas.api import HealthResponse
 from backend.agent.settings import get_settings
 
@@ -39,6 +40,10 @@ def create_app(
         else:
             app.state.sessionmaker = sessionmaker
 
+        # Redis
+        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        app.state.redis = redis_client
+
         # Checkpointer
         if checkpointer is None:
             async with checkpointer_lifespan(settings) as saver:
@@ -52,6 +57,7 @@ def create_app(
             log.info("agent_ready", env=settings.app_env)
             yield
 
+        await redis_client.aclose()
         if engine is not None:
             await engine.dispose()
 
@@ -77,6 +83,7 @@ def create_app(
     app.include_router(webhook.router)
     app.include_router(investigations.router)
     app.include_router(approvals.router)
+    app.include_router(queue.router)
 
     return app
 
