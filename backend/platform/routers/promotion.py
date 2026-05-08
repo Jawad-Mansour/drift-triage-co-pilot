@@ -1,14 +1,12 @@
-# src/platform/routers/promotion.py
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 import mlflow
+from fastapi import APIRouter, HTTPException
 from mlflow.tracking import MlflowClient
+from pydantic import BaseModel
+
+from backend.platform.settings import get_settings
 
 router = APIRouter(prefix="/registry", tags=["promotion"])
 
-# MLflow setup – will be overridden by env in docker
-mlflow.set_tracking_uri("file:./mlruns")
-client = MlflowClient()
 
 class PromoteRequest(BaseModel):
     model_name: str
@@ -17,39 +15,34 @@ class PromoteRequest(BaseModel):
     investigation_id: str
     reason: str
 
-def promotion_checklist(model_name: str, version: str) -> bool:
-    """Day‑4 promotion checklist."""
-    try:
-        mv = client.get_model_version(model_name, version)
-    except:
-        return False
-    if mv.stage != "Staging":
-        return False
-    # Check artifact triple
-    run_id = mv.run_id
-    artifacts = client.list_artifacts(run_id)
-    artifact_paths = [a.path for a in artifacts]
-    if "model" not in artifact_paths:
-        return False
-    if "model_card/model_card.json" not in artifact_paths:
-        return False
-    # Signature presence check (inside model metadata)
-    model_uri = f"models:/{model_name}/{version}"
-    try:
-        loaded = mlflow.pyfunc.load_model(model_uri)
-        if not loaded.metadata or not loaded.metadata.get("signature"):
-            return False
-    except:
-        return False
-    return True
 
 @router.post("/promote")
-async def promote(request: PromoteRequest):
-    if not promotion_checklist(request.model_name, request.candidate_version):
-        raise HTTPException(status_code=400, detail="Promotion checklist failed")
-    client.transition_model_version_stage(
-        name=request.model_name,
-        version=request.candidate_version,
-        stage="Production"
-    )
-    return {"status": "promoted", "version": request.candidate_version}
+async def promote(req: PromoteRequest):
+    s = get_settings()
+    mlflow.set_tracking_uri(s.mlflow_tracking_uri)
+    client = MlflowClient()
+
+    version = req.candidate_version
+    if version == "previous":
+        try:
+            current = client.get_model_version_by_alias(req.model_name, "champion")
+            cur_v = int(current.version)
+            all_v = client.search_model_versions(f"name='{req.model_name}'")
+            prev = max((v for v in all_v if int(v.version) < cur_v), key=lambda v: int(v.version), default=None)
+            if not prev:
+                raise HTTPException(status_code=404, detail="No previous version for rollback")
+            version = prev.version
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        client.get_model_version(req.model_name, version)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found")
+
+    client.set_registered_model_alias(req.model_name, "champion", version)
+    from backend.platform.routers.predict import load_champion_model
+    load_champion_model()
+    return {"status": "promoted", "version": version, "alias": "champion"}

@@ -65,8 +65,8 @@ Stratified by target, `random_state=42`.
 
 ## Model Decisions
 
-- **Algorithm:** LightGBM in sklearn `Pipeline`
-- **Class imbalance:** `class_weight="balanced"`
+- **Algorithm:** XGBoost + Sigmoid calibration (`CalibratedClassifierCV`)
+- **Class imbalance:** `scale_pos_weight` tuned via calibration
 - **Threshold tuning:** highest threshold where `recall >= 0.75` on validation split
 - **Promotion gate:** `AUC > 0.80 AND Recall >= 0.75`
 

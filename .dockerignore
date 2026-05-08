@@ -29,10 +29,6 @@ docs/
 !docs/ARCH.md
 !docs/DECISIONS.md
 
-# ML research layer — not Docker
-ml/
-!ml/.gitkeep
-
 # Dataset — mounted via volume or downloaded in container
 data/
 

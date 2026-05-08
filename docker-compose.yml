@@ -36,7 +36,7 @@ services:
 
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:latest
+    image: ghcr.io/mlflow/mlflow:v2.14.3
     ports:
       - "5000:5000"
     environment:
@@ -47,24 +47,26 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: >
-      sh -c "mlflow server
-        --host 0.0.0.0
-        --port 5000
-        --backend-store-uri $$MLFLOW_BACKEND_STORE_URI
-        --default-artifact-root $$MLFLOW_ARTIFACT_ROOT"
+    command: >-
+      bash -c "pip install psycopg2-binary -q &&
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri $$MLFLOW_BACKEND_STORE_URI
+      --artifacts-destination $$MLFLOW_ARTIFACT_ROOT
+      --default-artifact-root mlflow-artifacts:/
+      --serve-artifacts"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\" || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 12
-      start_period: 30s
+      retries: 30
+      start_period: 60s
 
   # ── TRAINER (runs once, exits 0) ─────────────────────────────────────────────
 
   trainer:
     build:
-      context: ./backend/trainer
+      context: .
+      dockerfile: backend/trainer/Dockerfile
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER:-drift}
@@ -82,7 +84,8 @@ services:
 
   platform:
     build:
-      context: ./backend/platform
+      context: .
+      dockerfile: backend/platform/Dockerfile
     ports:
       - "8001:8001"
     environment:
@@ -104,7 +107,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\" || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -114,7 +117,8 @@ services:
 
   agent:
     build:
-      context: ./backend/agent
+      context: .
+      dockerfile: backend/agent/Dockerfile
     ports:
       - "8002:8002"
     environment:
@@ -139,7 +143,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\" || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -149,7 +153,8 @@ services:
 
   worker:
     build:
-      context: ./backend/worker
+      context: .
+      dockerfile: backend/worker/Dockerfile
     environment:
       REDIS_HOST: redis
       REDIS_PASSWORD: ${REDIS_PASSWORD}
@@ -179,6 +184,7 @@ services:
     environment:
       PLATFORM_URL: http://platform:8001
       AGENT_URL: http://agent:8002
+      AGENT_API_KEY: ${AGENT_API_KEY}
       AGENT_HIL_POLL_INTERVAL: ${AGENT_HIL_POLL_INTERVAL:-2}
     depends_on:
       platform:

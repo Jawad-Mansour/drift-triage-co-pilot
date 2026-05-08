@@ -102,7 +102,7 @@ Teammate's service. Serves predictions, calculates PSI/Chi² drift every 50 pred
 - **`schemas/`** — `prediction.py`, `drift_alert.py`, `promote.py`.
 
 #### `backend/trainer/`
-Runs exactly once on `docker-compose up`. Trains LightGBM, tunes threshold (recall ≥ 0.75), registers v1 in MLflow with artifact triple (model binary + input schema + model card), seeds the `drift_reference` table in Postgres, then exits with code 0. All downstream services depend on this completing before they start.
+Runs exactly once on `docker-compose up`. Trains XGBoost with Sigmoid calibration, tunes threshold (recall ≥ 0.75), registers v1 in MLflow with artifact triple (model binary + input schema + model card), seeds the `drift_reference` table in Postgres, then exits with code 0. All downstream services depend on this completing before they start.
 
 #### `backend/worker/`
 Listens on the Redis main queue using `BLPOP` in an async loop. Routes tasks to handlers in `tasks/`. On failure, re-queues with exponential backoff via Redis `ZADD`. After 5 failures, moves task to DLQ. Promotes models to Staging only — never to Production directly.
@@ -125,7 +125,7 @@ The data science research layer. This is where exploration and experimentation h
 
 - **`notebooks/`** — Jupyter notebooks for EDA and model selection experiments.
 - **`preprocessing/`** — Feature engineering scripts (drop `duration`, create `contacted_before` flag, handle `unknown` categories).
-- **`training/`** — Training experiments that informed the LightGBM pipeline in `backend/trainer/`.
+- **`training/`** — Training experiments that informed the XGBoost pipeline in `backend/trainer/`.
 - **`evaluation/`** — Metric analysis, threshold tuning curves, AUC/recall tradeoff plots.
 - **`models/`** — Local saved model artifacts. **Gitignored** — too large for version control, source of truth is MLflow.
 

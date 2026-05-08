@@ -1,0 +1,327 @@
+PS C:\Projects\drift-triage-co-pilot> docker-compose up -d postgres redis mlflow
+[+] up 4/4
+ ✔ Network drift-triage-co-pilot_default      Created                                                                                                        0.1s
+ ✔ Container drift-triage-co-pilot-postgres-1 Healthy                                                                                                        7.2s
+ ✔ Container drift-triage-co-pilot-redis-1    Started                                                                                                        1.7s
+ ✔ Container drift-triage-co-pilot-mlflow-1   Started                                                                                                        7.3s
+PS C:\Projects\drift-triage-co-pilot> docker-compose ps mlflow
+NAME                             IMAGE                           COMMAND                  SERVICE   CREATED         STATUS                   PORTS
+drift-triage-co-pilot-mlflow-1   ghcr.io/mlflow/mlflow:v2.14.3   "bash -c 'pip instal…"   mlflow    3 minutes ago   Up 3 minutes (healthy)   0.0.0.0:5000->5000/tcp, [::]:5000->5000/tcp
+PS C:\Projects\drift-triage-co-pilot> docker-compose up trainer
+[+] up 3/3
+ ✔ Container drift-triage-co-pilot-postgres-1 Running                                                                                                        0.0s
+ ✔ Container drift-triage-co-pilot-mlflow-1   Running                                                                                                        0.0s
+ ✔ Container drift-triage-co-pilot-trainer-1  Created                                                                                                        0.2s
+Attaching to trainer-1
+Container drift-triage-co-pilot-postgres-1 Waiting 
+Container drift-triage-co-pilot-postgres-1 Healthy 
+Container drift-triage-co-pilot-mlflow-1 Waiting 
+Container drift-triage-co-pilot-postgres-1 Waiting 
+Container drift-triage-co-pilot-mlflow-1 Healthy 
+Container drift-triage-co-pilot-postgres-1 Healthy 
+trainer-1  | /usr/local/lib/python3.11/site-packages/xgboost/training.py:200: UserWarning: [22:10:08] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+trainer-1  | Parameters: { "use_label_encoder" } are not used.
+trainer-1  | 
+trainer-1  |   bst.update(dtrain, iteration=i, fobj=obj)
+trainer-1  | /usr/local/lib/python3.11/site-packages/xgboost/training.py:200: UserWarning: [22:10:08] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+trainer-1  | Parameters: { "use_label_encoder" } are not used.
+trainer-1  | 
+trainer-1  |   bst.update(dtrain, iteration=i, fobj=obj)
+trainer-1  | /usr/local/lib/python3.11/site-packages/xgboost/training.py:200: UserWarning: [22:10:08] WARNING: /__w/xgboost/xgboost/src/learner.cc:782: 
+trainer-1  | Parameters: { "use_label_encoder" } are not used.
+trainer-1  | 
+trainer-1  |   bst.update(dtrain, iteration=i, fobj=obj)
+trainer-1  | 2026/05/07 22:10:10 WARNING mlflow.utils.git_utils: Failed to import Git (the Git executable is probably not on your PATH), so Git SHA is not available. Error: Failed to initialize: Bad git executable.
+trainer-1  | The git executable must be specified in one of the following ways:
+trainer-1  |     - be included in your $PATH
+trainer-1  |     - be set via $GIT_PYTHON_GIT_EXECUTABLE
+trainer-1  |     - explicitly set via git.refresh(<full-path-to-git-executable>)
+trainer-1  | 
+trainer-1  | All git commands will error until this is rectified.
+trainer-1  | 
+trainer-1  | This initial message can be silenced or aggravated in the future by setting the
+trainer-1  | $GIT_PYTHON_REFRESH environment variable. Use one of the following values:
+trainer-1  |     - quiet|q|silence|s|silent|none|n|0: for no message or exception
+trainer-1  |     - warn|w|warning|log|l|1: for a warning message (logging level CRITICAL, displayed by default)
+trainer-1  |     - error|e|exception|raise|r|2: for a raised exception
+trainer-1  | 
+trainer-1  | Example:
+trainer-1  |     export GIT_PYTHON_REFRESH=quiet
+trainer-1  | 
+trainer-1  | /usr/local/lib/python3.11/site-packages/mlflow/types/utils.py:440: UserWarning: Hint: Inferred schema contains integer column(s). Integer columns in Python cannot represent missing values. If your input data contains missing values at inference time, it will be encoded as floats and will cause a schema enforcement error. The best way to avoid this problem is to infer the model schema based on a realistic data sample (training dataset) that includes missing values. Alternatively, you can declare integer columns as doubles (float64) whenever these columns may have missing values. See `Handling Integers With Missing Values <https://www.mlflow.org/docs/latest/models.html#handling-integers-with-missing-values>`_ for more details.
+trainer-1  |   warnings.warn(
+trainer-1  | 2026/05/07 22:10:11 WARNING mlflow.models.model: `artifact_path` is deprecated. Please use `name` instead.
+trainer-1  | Traceback (most recent call last):
+trainer-1  |   File "/app/ml/training/train.py", line 222, in <module>
+trainer-1  |     mlflow.sklearn.log_model(
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/sklearn/__init__.py", line 478, in log_model
+trainer-1  | Loaded 41188 rows from /app/ml/training/../data/bank-additional-full.csv
+trainer-1  | Train: (24712, 19), Val: (8238, 19), Test: (8238, 19)
+trainer-1  | Selected threshold: 0.070
+trainer-1  | Test AUC: 0.8095, F1: 0.3495, Recall: 0.7963, Precision: 0.2239
+trainer-1  | 🏃 View run improved_xgb_calibrated at: http://mlflow:5000/#/experiments/1/runs/f0fe6700c42847808c4bcb8ae924640c
+trainer-1  | 🧪 View experiment at: http://mlflow:5000/#/experiments/1
+trainer-1  |     return Model.log(
+trainer-1  |            ^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/models/model.py", line 1167, in log
+trainer-1  |     model = _create_logged_model(
+trainer-1  |             ^^^^^^^^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/tracking/fluent.py", line 2592, in _create_logged_model
+trainer-1  |     return MlflowClient()._create_logged_model(
+trainer-1  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/tracking/client.py", line 5789, in _create_logged_model
+trainer-1  |     return self._tracking_client.create_logged_model(
+trainer-1  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/telemetry/track.py", line 30, in wrapper
+trainer-1  |     result = func(*args, **kwargs)
+trainer-1  |              ^^^^^^^^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/tracking/_tracking_service/client.py", line 879, in create_logged_model
+trainer-1  |     return self.store.create_logged_model(
+trainer-1  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/store/tracking/rest_store.py", line 1187, in create_logged_model
+trainer-1  |     response_proto = self._call_endpoint(CreateLoggedModel, req_body)
+trainer-1  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/store/tracking/rest_store.py", line 243, in _call_endpoint
+trainer-1  |     return call_endpoint(
+trainer-1  |            ^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/utils/rest_utils.py", line 658, in call_endpoint
+trainer-1  |     response = verify_rest_response(
+trainer-1  |                ^^^^^^^^^^^^^^^^^^^^^
+trainer-1  |   File "/usr/local/lib/python3.11/site-packages/mlflow/utils/rest_utils.py", line 374, in verify_rest_response
+trainer-1  |     raise MlflowException(
+trainer-1  | mlflow.exceptions.MlflowException: API request to endpoint /api/2.0/mlflow/logged-models failed with error code 404 != 200. Response body: '<!doctype html>
+trainer-1  | <html lang=en>
+trainer-1  | <title>404 Not Found</title>
+trainer-1  | <h1>Not Found</h1>
+trainer-1  | <p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>
+trainer-1  | '
+trainer-1 exited with code 1
+PS C:\Projects\drift-triage-co-pilot> docker-compose up trainer --build
+#1 [internal] load local bake definitions
+#1 reading from stdin 573B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 384B done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/python:3.11-slim
+#3 DONE 0.1s
+
+#4 [internal] load metadata for ghcr.io/astral-sh/uv:latest
+#4 DONE 0.4s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 744B done
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 transferring context: 11.58kB 0.1s done
+#6 DONE 0.2s
+
+#7 [stage-0 1/5] FROM docker.io/library/python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2
+#7 resolve docker.io/library/python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2 0.2s done
+#7 DONE 0.2s
+
+#8 FROM ghcr.io/astral-sh/uv:latest@sha256:798712e57f879c5393777cbda2bb309b29fcdeb0532129d4b1c3125c5385975a
+#8 resolve ghcr.io/astral-sh/uv:latest@sha256:798712e57f879c5393777cbda2bb309b29fcdeb0532129d4b1c3125c5385975a 0.2s done
+#8 DONE 0.4s
+
+#7 [stage-0 1/5] FROM docker.io/library/python:3.11-slim@sha256:6d85378d88a19cd4d76079817532d62232be95757cb45945a99fec8e8084b9c2
+#7 CACHED
+
+#8 FROM ghcr.io/astral-sh/uv:latest@sha256:798712e57f879c5393777cbda2bb309b29fcdeb0532129d4b1c3125c5385975a
+#8 sha256:a0353140b950ebef25df9a1feaabcd14558bd07dbbbba22e3b37ebb9935707a1 0B / 98B 0.2s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 0B / 25.07MB 0.2s
+#8 sha256:a0353140b950ebef25df9a1feaabcd14558bd07dbbbba22e3b37ebb9935707a1 98B / 98B 1.1s done
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 1.05MB / 25.07MB 5.3s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 2.10MB / 25.07MB 10.4s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 4.19MB / 25.07MB 11.9s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 6.29MB / 25.07MB 13.2s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 8.39MB / 25.07MB 16.1s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 10.49MB / 25.07MB 17.9s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 12.58MB / 25.07MB 19.5s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 14.68MB / 25.07MB 21.4s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 16.78MB / 25.07MB 22.9s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 18.87MB / 25.07MB 24.9s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 20.97MB / 25.07MB 27.7s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 23.07MB / 25.07MB 29.5s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 25.07MB / 25.07MB 31.3s
+#8 sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 25.07MB / 25.07MB 32.5s done
+#8 DONE 33.1s
+
+#8 FROM ghcr.io/astral-sh/uv:latest@sha256:798712e57f879c5393777cbda2bb309b29fcdeb0532129d4b1c3125c5385975a
+#8 extracting sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780
+#8 extracting sha256:eb6abed88852867c9b5e091004354eae1c596c3df5383885dd3b1c42ec35a780 6.1s done
+#8 DONE 39.2s
+
+#8 FROM ghcr.io/astral-sh/uv:latest@sha256:798712e57f879c5393777cbda2bb309b29fcdeb0532129d4b1c3125c5385975a
+#8 extracting sha256:a0353140b950ebef25df9a1feaabcd14558bd07dbbbba22e3b37ebb9935707a1 0.1s done
+#8 DONE 39.3s
+
+#9 [stage-0 2/5] COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+#9 DONE 4.8s
+
+#10 [stage-0 3/5] WORKDIR /app
+#10 DONE 0.2s
+
+#11 [stage-0 4/5] RUN uv pip install --no-cache     "mlflow==2.14.3" "xgboost<3" scikit-learn     pandas numpy scipy     "psycopg[binary]"     python-dotenv
+#11 3.986 Using Python 3.11.15 environment at: /usr/local
+#11 8.886 Resolved 63 packages in 4.89s
+#11 9.269 Downloading numpy (17.4MiB)
+#11 9.269 Downloading kiwisolver (1.4MiB)
+#11 9.284 Downloading pandas (12.2MiB)
+#11 9.308 Downloading matplotlib (8.4MiB)
+#11 9.379 Downloading nvidia-nccl-cu12 (286.3MiB)
+#11 9.471 Downloading fonttools (4.8MiB)
+#11 9.597 Downloading scipy (33.7MiB)
+#11 9.652 Downloading pillow (6.8MiB)
+#11 9.793 Downloading pyarrow (36.6MiB)
+#11 9.821 Downloading xgboost (213.3MiB)
+#11 9.859 Downloading mlflow (24.6MiB)
+#11 9.879 Downloading sqlalchemy (3.2MiB)
+#11 9.880 Downloading scikit-learn (8.7MiB)
+#11 9.880 Downloading psycopg-binary (4.9MiB)
+#11 35.88  Downloaded kiwisolver
+#11 58.51  Downloaded sqlalchemy
+#11 77.20  Downloaded fonttools
+#11 78.58  Downloaded psycopg-binary
+#11 97.08  Downloaded pillow
+#11 110.8  Downloaded matplotlib
+#11 113.9  Downloaded scikit-learn
+#11 138.1  Downloaded pandas
+#11 175.1  Downloaded numpy
+#11 209.3  Downloaded mlflow
+#11 243.8  Downloaded scipy
+#11 251.9  Downloaded pyarrow
+#11 621.8  Downloaded xgboost
+#11 699.5  Downloaded nvidia-nccl-cu12
+#11 699.5 Prepared 63 packages in 11m 30s
+#11 699.9 Installed 63 packages in 422ms
+#11 699.9  + alembic==1.18.4
+#11 699.9  + blinker==1.9.0
+#11 699.9  + cachetools==5.5.2
+#11 699.9  + certifi==2026.4.22
+#11 699.9  + charset-normalizer==3.4.7
+#11 699.9  + click==8.3.3
+#11 699.9  + cloudpickle==3.1.2
+#11 699.9  + contourpy==1.3.3
+#11 699.9  + cycler==0.12.1
+#11 699.9  + docker==7.1.0
+#11 699.9  + entrypoints==0.4
+#11 699.9  + flask==3.1.3
+#11 699.9  + fonttools==4.62.1
+#11 699.9  + gitdb==4.0.12
+#11 699.9  + gitpython==3.1.50
+#11 699.9  + graphene==3.4.3
+#11 699.9  + graphql-core==3.2.8
+#11 699.9  + graphql-relay==3.2.0
+#11 699.9  + greenlet==3.5.0
+#11 699.9  + gunicorn==22.0.0
+#11 699.9  + idna==3.13
+#11 699.9  + importlib-metadata==7.2.1
+#11 699.9  + itsdangerous==2.2.0
+#11 699.9  + jinja2==3.1.6
+#11 699.9  + joblib==1.5.3
+#11 699.9  + kiwisolver==1.5.0
+#11 699.9  + mako==1.3.12
+#11 699.9  + markdown==3.10.2
+#11 699.9  + markupsafe==3.0.3
+#11 699.9  + matplotlib==3.10.9
+#11 699.9  + mlflow==2.14.3
+#11 699.9  + numpy==1.26.4
+#11 699.9  + nvidia-nccl-cu12==2.30.4
+#11 699.9  + opentelemetry-api==1.41.1
+#11 699.9  + opentelemetry-sdk==1.41.1
+#11 699.9  + opentelemetry-semantic-conventions==0.62b1
+#11 699.9  + packaging==24.2
+#11 699.9  + pandas==2.3.3
+#11 699.9  + pillow==12.2.0
+#11 699.9  + protobuf==4.25.9
+#11 699.9  + psycopg==3.3.4
+#11 699.9  + psycopg-binary==3.3.4
+#11 699.9  + pyarrow==15.0.2
+#11 699.9  + pyparsing==3.3.2
+#11 699.9  + python-dateutil==2.9.0.post0
+#11 699.9  + python-dotenv==1.2.2
+#11 699.9  + pytz==2024.2
+#11 699.9  + pyyaml==6.0.3
+#11 699.9  + querystring-parser==1.2.4
+#11 699.9  + requests==2.33.1
+#11 699.9  + scikit-learn==1.8.0
+#11 699.9  + scipy==1.17.1
+#11 699.9  + six==1.17.0
+#11 699.9  + smmap==5.0.3
+#11 699.9  + sqlalchemy==2.0.49
+#11 699.9  + sqlparse==0.5.5
+#11 699.9  + threadpoolctl==3.6.0
+#11 699.9  + typing-extensions==4.15.0
+#11 699.9  + tzdata==2026.2
+#11 699.9  + urllib3==2.7.0
+#11 699.9  + werkzeug==3.1.8
+#11 699.9  + xgboost==2.1.4
+#11 699.9  + zipp==3.23.1
+#11 DONE 702.9s
+
+#12 [stage-0 5/5] COPY ml/ ml/
+#12 DONE 1.2s
+
+#13 exporting to image
+#13 exporting layers
+#13 exporting layers 110.6s done
+#13 exporting manifest sha256:64f53590fa9b52c1981d6ebe8fe7937393e185ace0c17442b8189a6f2aad129a 0.1s done
+#13 exporting config sha256:b53a9c3fb52a5c4a0d9510281721a729e784cbdea1b4595a21021464ecf7479f 0.1s done
+#13 exporting attestation manifest sha256:3616df495f73550f75259a365e24d5870c98a9e325caae4bb7ffddd07233fadd
+#13 exporting attestation manifest sha256:3616df495f73550f75259a365e24d5870c98a9e325caae4bb7ffddd07233fadd 0.2s done
+#13 exporting manifest list sha256:4355632b52ee1d2c59bdb44a15438c73a2d011ac8f8fc4c7f3c2b02c6c99de1c
+#13 exporting manifest list sha256:4355632b52ee1d2c59bdb44a15438c73a2d011ac8f8fc4c7f3c2b02c6c99de1c 0.1s done
+#13 naming to docker.io/library/drift-triage-co-pilot-trainer:latest 0.1s done
+#13 unpacking to docker.io/library/drift-triage-co-pilot-trainer:latest
+#13 unpacking to docker.io/library/drift-triage-co-pilot-trainer:latest 60.6s done
+#13 DONE 172.0s
+
+#14 resolving provenance for metadata file
+#14 DONE 0.1s
+[+] up 4/4
+ ✔ Image drift-triage-co-pilot-trainer        Built                                                                                                        923.1s
+ ✔ Container drift-triage-co-pilot-postgres-1 Running                                                                                                      0.0s
+ ✔ Container drift-triage-co-pilot-mlflow-1   Running                                                                                                      0.0s
+ ✔ Container drift-triage-co-pilot-trainer-1  Recreated                                                                                                    9.7s
+Attaching to trainer-1
+Container drift-triage-co-pilot-postgres-1 Waiting 
+Container drift-triage-co-pilot-postgres-1 Healthy 
+Container drift-triage-co-pilot-mlflow-1 Waiting 
+Container drift-triage-co-pilot-postgres-1 Waiting 
+Container drift-triage-co-pilot-postgres-1 Healthy 
+Container drift-triage-co-pilot-mlflow-1 Healthy 
+trainer-1  | 2026/05/07 22:26:37 WARNING mlflow.utils.git_utils: Failed to import Git (the Git executable is probably not on your PATH), so Git SHA is not available. Error: Failed to initialize: Bad git executable.
+trainer-1  | The git executable must be specified in one of the following ways:
+trainer-1  |     - be included in your $PATH
+trainer-1  |     - be set via $GIT_PYTHON_GIT_EXECUTABLE
+trainer-1  |     - explicitly set via git.refresh(<full-path-to-git-executable>)
+trainer-1  | 
+trainer-1  | All git commands will error until this is rectified.
+trainer-1  | 
+trainer-1  | This initial message can be silenced or aggravated in the future by setting the
+trainer-1  | $GIT_PYTHON_REFRESH environment variable. Use one of the following values:
+trainer-1  |     - quiet|q|silence|s|silent|none|n|0: for no message or exception
+trainer-1  |     - warn|w|warning|log|l|1: for a warning message (logging level CRITICAL, displayed by default)
+trainer-1  |     - error|e|exception|raise|r|2: for a raised exception
+trainer-1  | 
+trainer-1  | Example:
+trainer-1  |     export GIT_PYTHON_REFRESH=quiet
+trainer-1  | 
+trainer-1  | /usr/local/lib/python3.11/site-packages/mlflow/types/utils.py:406: UserWarning: Hint: Inferred schema contains integer column(s). Integer columns in Python cannot represent missing values. If your input data contains missing values at inference time, it will be encoded as floats and will cause a schema enforcement error. The best way to avoid this problem is to infer the model schema based on a realistic data sample (training dataset) that includes missing values. Alternatively, you can declare integer columns as doubles (float64) whenever these columns may have missing values. See `Handling Integers With Missing Values <https://www.mlflow.org/docs/latest/models.html#handling-integers-with-missing-values>`_ for more details.
+trainer-1  |   warnings.warn(
+trainer-1  | Successfully registered model 'BankMarketingXGB'.
+trainer-1  | 2026/05/07 22:27:41 INFO mlflow.store.model_registry.abstract_store: Waiting up to 300 seconds for model version to finish creation. Model name: BankMarketingXGB, version 1
+trainer-1  | Created version '1' of model 'BankMarketingXGB'.
+trainer-1  | Loaded 41188 rows from /app/ml/training/../data/bank-additional-full.csv
+trainer-1  | Train: (24712, 19), Val: (8238, 19), Test: (8238, 19)
+trainer-1  | Selected threshold: 0.070
+trainer-1  | Test AUC: 0.8095, F1: 0.3495, Recall: 0.7963, Precision: 0.2239
+trainer-1  | Model registered as version 1 → champion alias set
+trainer-1  | Training complete. Artifacts saved in ./mlruns and ./artifacts
+trainer-1  | drift_reference seeded in Postgres
+trainer-1 exited with code 0
+PS C:\Projects\drift-triage-co-pilot> 

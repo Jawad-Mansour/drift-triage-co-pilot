@@ -23,6 +23,7 @@ import xgboost as xgb
 import mlflow
 import mlflow.sklearn
 from mlflow.models import infer_signature
+import psycopg
 
 # -------------------------------
 # 1. Load & clean data
@@ -95,9 +96,8 @@ base_model = xgb.XGBClassifier(
     learning_rate=0.05,
     subsample=0.8,
     colsample_bytree=0.8,
-    scale_pos_weight=(len(y_train)-y_train.sum())/y_train.sum(),  # handles imbalance
+    scale_pos_weight=(len(y_train)-y_train.sum())/y_train.sum(),
     random_state=42,
-    use_label_encoder=False,
     eval_metric="logloss"
 )
 
@@ -162,7 +162,7 @@ baseline_stats["output"] = {
 # -------------------------------
 # 9. MLflow logging
 # -------------------------------
-mlflow.set_tracking_uri("file:./mlruns")
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
 mlflow.set_experiment("bank_marketing_improved")
 
 # Environment fingerprint (safe pip freeze)
@@ -206,7 +206,8 @@ with mlflow.start_run(run_name="improved_xgb_calibrated"):
     mlflow.log_params({
         "classifier": "XGBoost",
         "calibration": "sigmoid",
-        "threshold_rule": "max_with_recall>=0.75"
+        "threshold_rule": "max_with_recall>=0.75",
+        "tuned_threshold": str(best_threshold),
     })
     mlflow.log_metrics({
         "test_auc": test_auc,
@@ -231,11 +232,54 @@ with mlflow.start_run(run_name="improved_xgb_calibrated"):
     model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
     registered = mlflow.register_model(model_uri, "BankMarketingXGB")
     client = mlflow.tracking.MlflowClient()
-    client.transition_model_version_stage(
-        name="BankMarketingXGB",
-        version=registered.version,
-        stage="Staging"
-    )
-    print(f"Model registered as version {registered.version} in Staging")
+    if os.getenv("PROMOTE_ON_TRAIN", "true").lower() == "true":
+        client.set_registered_model_alias("BankMarketingXGB", "champion", registered.version)
+        print(f"Model registered as version {registered.version} → champion alias set")
+    else:
+        print(f"Model registered as version {registered.version} (no alias — pending HIL)")
 
 print("Training complete. Artifacts saved in ./mlruns and ./artifacts")
+
+# -------------------------------
+# 10. Seed drift_reference in Postgres
+# -------------------------------
+pg_host = os.getenv("POSTGRES_HOST", "localhost")
+pg_user = os.getenv("POSTGRES_USER", "drift")
+pg_pass = os.getenv("POSTGRES_PASSWORD", "")
+pg_db   = os.getenv("POSTGRES_DB", "drift_triage")
+
+try:
+    conn_str = f"host={pg_host} user={pg_user} password={pg_pass} dbname={pg_db}"
+    with psycopg.connect(conn_str) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS drift_reference (
+                    feature_name VARCHAR(100) PRIMARY KEY,
+                    feature_type VARCHAR(20) NOT NULL,
+                    bin_edges     JSONB,
+                    ref_counts    JSONB NOT NULL,
+                    model_version VARCHAR(50) NOT NULL
+                )
+            """)
+            for col in numeric_features:
+                vals = X_train[col].dropna().values
+                edges = np.percentile(vals, np.linspace(0, 100, 11)).tolist()
+                counts, _ = np.histogram(vals, bins=edges)
+                cur.execute("""
+                    INSERT INTO drift_reference VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (feature_name) DO UPDATE
+                    SET bin_edges=EXCLUDED.bin_edges, ref_counts=EXCLUDED.ref_counts,
+                        model_version=EXCLUDED.model_version
+                """, (col, "numeric", json.dumps(edges), json.dumps(counts.tolist()), registered.version))
+            for col in categorical_features:
+                freq = X_train[col].value_counts(normalize=True).to_dict()
+                cur.execute("""
+                    INSERT INTO drift_reference VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (feature_name) DO UPDATE
+                    SET bin_edges=EXCLUDED.bin_edges, ref_counts=EXCLUDED.ref_counts,
+                        model_version=EXCLUDED.model_version
+                """, (col, "categorical", None, json.dumps(freq), registered.version))
+        conn.commit()
+    print("drift_reference seeded in Postgres")
+except Exception as e:
+    print(f"WARNING: could not seed drift_reference: {e}")

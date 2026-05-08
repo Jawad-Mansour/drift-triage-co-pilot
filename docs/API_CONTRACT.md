@@ -84,6 +84,36 @@
 
 ---
 
+---
+
+## Internal Value Formats
+
+### Investigation Status (from `/investigations`)
+
+Status values are lowercase strings matching the DB enum:
+
+| API value | Meaning |
+|-----------|---------|
+| `running` | Graph is executing |
+| `awaiting_hil` | Paused — waiting for human approval |
+| `completed` | Graph finished (approved, rejected, or monitor-only) |
+| `failed` | Unhandled exception in graph |
+
+### Severity Codes (from triage node)
+
+The triage node uses short codes; the dashboard normalises them for display:
+
+| API value | Display label | PSI range |
+|-----------|--------------|-----------|
+| `LOW` | LOW | < 0.10 |
+| `MED` | MEDIUM | 0.10 – 0.20 |
+| `HIGH` | HIGH | 0.20 – 0.25 |
+| `CRIT` | CRITICAL | ≥ 0.25 |
+
+Note: `CRIT` is intentionally a short code (4 chars) to fit in the DB `severity` column.
+
+---
+
 ## Schema Versioning Rules
 
 - Current version: `1.0`

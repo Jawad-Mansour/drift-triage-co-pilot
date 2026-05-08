@@ -8,7 +8,7 @@ All 64 decisions are complete. Source of truth: `deepseek-brainstorm.txt`.
 
 | # | Decision | Choice | Status |
 |---|----------|--------|--------|
-| 1 | ML Model | LightGBM (`class_weight=balanced`, `random_state=42`) | ✅ |
+| 1 | ML Model | XGBoost + Sigmoid calibration (`CalibratedClassifierCV`, `random_state=42`) | ✅ |
 | 2 | pdays==999 | Boolean flag `contacted_before`, drop raw pdays | ✅ |
 | 3 | Drift window size | 500 predictions (sliding window) | ✅ |
 | 4 | Drift frequency | Recalculate every 50 new predictions | ✅ |

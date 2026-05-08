@@ -1,24 +1,33 @@
-from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from backend.platform.routers import prediction, registry, drift_trigger
-from backend.platform.db.base import engine, Base
+
 import mlflow
-from backend.platform.routers.prediction import load_production_model
+from fastapi import FastAPI
+
+from backend.platform.db.base import Base, get_engine
+from backend.platform.routers import predict, registry, promotion, retrain, replay
+from backend.platform.settings import get_settings
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-    # Load production model into memory
-    load_production_model()
+    s = get_settings()
+    mlflow.set_tracking_uri(s.mlflow_tracking_uri)
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    predict.load_champion_model()
     yield
-    # Cleanup (optional)
+    await engine.dispose()
+
 
 app = FastAPI(title="ML Platform", lifespan=lifespan)
 
-app.include_router(prediction.router)
-app.include_router(registry.router)   # for /promote
-app.include_router(drift_trigger.router)  # optional manual trigger
+app.include_router(predict.router)
+app.include_router(registry.router)
+app.include_router(promotion.router)
+app.include_router(retrain.router)
+app.include_router(replay.router)
+
 
 @app.get("/health")
 def health():

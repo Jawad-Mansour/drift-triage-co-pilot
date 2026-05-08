@@ -20,7 +20,7 @@ human approves before anything reaches Production.
 
   TRAINER (runs once, exits 0)
   +--------------------------------------------------+
-  | Train LightGBM --> Register v1                   |
+  | Train XGBoost  --> Register v1                   |
   | Seed drift_reference --> Exit 0                  |
   +--------------------------------------------------+
 
